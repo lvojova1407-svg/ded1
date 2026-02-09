@@ -164,7 +164,7 @@ def get_user_fio(telegram_id):
     return result[0] if result else None
 
 def get_next_2_hours_slots():
-    """Возвращает слоты на ближайшие 2 часа - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Возвращает слоты на ближайшие 2 часа"""
     now = datetime.now()
     current_time = now.strftime('%H:%M')
     current_date = now.strftime('%Y-%m-%d')
@@ -177,8 +177,6 @@ def get_next_2_hours_slots():
     c = conn.cursor()
     
     # Получаем слоты на ближайшие 2 часа
-    # ИСПРАВЛЕНИЕ: берем слоты, которые начинаются в течение следующих 2 часов
-    # включая те, что начинаются прямо сейчас или сразу после
     query = '''
     SELECT 
         ts.id,
@@ -190,45 +188,15 @@ def get_next_2_hours_slots():
     LEFT JOIN bookings b ON ts.id = b.slot_id AND b.status = 'active'
     LEFT JOIN users u ON b.user_id = u.user_id
     WHERE ts.date = ?
-      AND (
-        -- Слоты, которые начинаются в течение следующих 2 часов
-        (SUBSTR(ts.slot_time, 1, 5) >= ? AND SUBSTR(ts.slot_time, 1, 5) <= ?)
-        OR
-        -- Или ближайшие слоты, если сейчас между слотами (например, 18:58)
-        (SUBSTR(ts.slot_time, 1, 5) >= ?)
-      )
+      AND SUBSTR(ts.slot_time, 1, 5) >= ?
     GROUP BY ts.id, ts.slot_time, ts.max_people
     ORDER BY ts.slot_time
     LIMIT 8
     '''
     
-    c.execute(query, (current_date, current_time, end_time, current_time))
+    c.execute(query, (current_date, current_time))
     slots = c.fetchall()
     conn.close()
-    
-    # Если все еще нет слотов, берем просто ближайшие 8 слотов
-    if not slots:
-        conn = get_db_connection()
-        c = conn.cursor()
-        query2 = '''
-        SELECT 
-            ts.id,
-            ts.slot_time,
-            ts.max_people,
-            COUNT(b.id) as booked_count,
-            GROUP_CONCAT(u.full_name, ', ') as people_names
-        FROM time_slots ts
-        LEFT JOIN bookings b ON ts.id = b.slot_id AND b.status = 'active'
-        LEFT JOIN users u ON b.user_id = u.user_id
-        WHERE ts.date = ?
-          AND SUBSTR(ts.slot_time, 1, 5) >= ?
-        GROUP BY ts.id, ts.slot_time, ts.max_people
-        ORDER BY ts.slot_time
-        LIMIT 8
-        '''
-        c.execute(query2, (current_date, current_time))
-        slots = c.fetchall()
-        conn.close()
     
     return slots
 
@@ -476,7 +444,7 @@ async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню записи - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+    """Показывает меню записи - ИСПРАВЛЕННЫЙ БАГ С ВРЕМЕНЕМ"""
     user = update.effective_user
     
     # Проверяем регистрацию
@@ -503,7 +471,7 @@ async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = now.strftime('%H:%M')
     two_hours_later = (now + timedelta(hours=2)).strftime('%H:%M')
     
-    # Формируем сообщение с АКТУАЛЬНЫМ временем
+    # Формируем сообщение с РЕАЛЬНЫМ временем
     message = (
         f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
         f"Сейчас: {current_time}\n"
@@ -661,7 +629,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик inline-кнопок - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
+    """Обработчик inline-кнопок - ИСПРАВЛЕННЫЙ БАГ С ВРЕМЕНЕМ"""
     query = update.callback_query
     await query.answer()
     
@@ -723,7 +691,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Этот слот полностью занят!", show_alert=True)
     
     elif data == "refresh":
-        # Обновить список слотов - ИСПРАВЛЕННЫЙ ВАРИАНТ
+        # Обновить список слотов - ИСПРАВЛЕННЫЙ БАГ С ВРЕМЕНЕМ
         slots = get_next_2_hours_slots()
         
         if slots:
