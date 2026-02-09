@@ -1,7 +1,6 @@
 import os
 import logging
 import sqlite3
-import ntplib
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
