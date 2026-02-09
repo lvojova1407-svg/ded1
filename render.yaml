@@ -8,3 +8,4 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
     healthCheckPath: /health
+    autoDeploy: true
