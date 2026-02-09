@@ -1,32 +1,30 @@
-# Фикс для python-telegram-bot 20.7 в Python 3.13
+# Фикс для Python 3.13 - создаем фиктивный модуль imghdr
 import sys
 
-if sys.version_info >= (3, 13):
-    # Создаем фиктивный модуль imghdr для Python 3.13
-    class ImghdrModule:
-        @staticmethod
-        def what(file, h=None):
+# Создаем фиктивный модуль imghdr для Python 3.13
+class ImghdrModule:
+    @staticmethod
+    def what(file, h=None):
+        # Определяем тип изображения по расширению
+        if hasattr(file, 'name'):
+            filename = file.name
+        elif isinstance(file, str):
+            filename = file
+        else:
             return None
-    
-    sys.modules['imghdr'] = ImghdrModule()
+        
+        if filename.lower().endswith('.jpg') or filename.lower().endswith('.jpeg'):
+            return 'jpeg'
+        elif filename.lower().endswith('.png'):
+            return 'png'
+        elif filename.lower().endswith('.gif'):
+            return 'gif'
+        elif filename.lower().endswith('.bmp'):
+            return 'bmp'
+        return None
 
-import os
-import logging
-import sqlite3
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    CallbackQueryHandler, 
-    ContextTypes, 
-    MessageHandler, 
-    filters,
-    ConversationHandler
-)
-from dotenv import load_dotenv
-
-# ... остальной код ...
+# Заменяем модуль imghdr нашим фиктивным
+sys.modules['imghdr'] = ImghdrModule()
 
 import os
 import logging
