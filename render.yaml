@@ -1,11 +1,10 @@
 services:
-  - type: web
+  - type: worker
     name: telegram-break-bot
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python bot.py
+    pythonVersion: "3.11"
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-    healthCheckPath: /health
-    autoDeploy: true
