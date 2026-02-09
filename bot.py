@@ -21,6 +21,7 @@ DB_NAME = 'breaks.db'
 SLOT_DURATION = 15  # минут
 MAX_PEOPLE_PER_SLOT = 3
 TOTAL_SLOTS_PER_DAY = 96  # 24ч * 4 слота
+MOSCOW_OFFSET_HOURS = 3  # Москва UTC+3
 
 # Состояния для ConversationHandler
 WAITING_FOR_NAME = 1
@@ -33,31 +34,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== ФУНКЦИИ ВРЕМЕНИ (МОСКВА UTC+3) ====================
-def get_current_moscow_time():
+def get_moscow_time():
     """Возвращает текущее время в Московском часовом поясе (UTC+3)"""
     utc_now = datetime.now(timezone.utc)
-    moscow_offset = timedelta(hours=3)
-    return utc_now + moscow_offset
+    return utc_now + timedelta(hours=MOSCOW_OFFSET_HOURS)
 
-def get_today_date():
+def get_moscow_date():
     """Возвращает сегодняшнюю дату в Московском часовом поясе"""
-    return get_current_moscow_time().strftime('%Y-%m-%d')
+    return get_moscow_time().strftime('%Y-%m-%d')
 
-def get_current_time_str():
+def get_moscow_time_str():
     """Возвращает текущее время как строку HH:MM в Московском часовом поясе"""
-    return get_current_moscow_time().strftime('%H:%M')
+    return get_moscow_time().strftime('%H:%M')
 
-def get_current_time_for_sql():
+def adjust_time_for_sql(time_str):
     """
-    Возвращает текущее время для SQL запроса.
-    Так как слоты хранятся в локальном времени, а сервер в UTC,
-    нужно преобразовать время обратно для сравнения в БД.
+    Преобразует время из московского в "базовое" для SQL сравнения.
+    Слоты хранятся в локальном времени (уже московском).
     """
-    # Получаем московское время
-    moscow_time = get_current_moscow_time()
-    
-    # Преобразуем в строку для SQL
-    return moscow_time.strftime('%H:%M')
+    # Время уже в московском, просто возвращаем как есть
+    return time_str
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -91,12 +87,12 @@ def init_db():
                   FOREIGN KEY (slot_id) REFERENCES time_slots(id))''')
     
     # Создаем слоты на сегодня если их нет
-    today = get_today_date()
+    today = get_moscow_date()
     generate_slots_for_date(today, conn)
     
     conn.commit()
     conn.close()
-    logger.info("✅ База данных инициализирована")
+    logger.info(f"✅ База данных инициализирована (дата: {today})")
 
 def generate_slots_for_date(date, conn=None):
     """Генерирует 96 слотов на указанную дату"""
@@ -116,11 +112,18 @@ def generate_slots_for_date(date, conn=None):
             
             slot_time = f"{start_time}-{end_time}"
             
-            # Вставляем слот если его нет
-            c.execute('''INSERT OR IGNORE INTO time_slots 
-                         (slot_time, date, max_people) 
-                         VALUES (?, ?, ?)''',
-                      (slot_time, date, MAX_PEOPLE_PER_SLOT))
+            # Проверяем, существует ли уже слот для этой даты
+            c.execute('''SELECT COUNT(*) FROM time_slots 
+                         WHERE date = ? AND slot_time = ?''',
+                      (date, slot_time))
+            exists = c.fetchone()[0]
+            
+            if exists == 0:
+                c.execute('''INSERT INTO time_slots 
+                             (slot_time, date, max_people) 
+                             VALUES (?, ?, ?)''',
+                          (slot_time, date, MAX_PEOPLE_PER_SLOT))
+                logger.debug(f"Создан слот: {date} {slot_time}")
     
     if close_conn:
         conn.commit()
@@ -192,10 +195,12 @@ def get_user_fio(telegram_id):
 
 def get_next_2_hours_slots():
     """Возвращает слоты на ближайшие 2 часа"""
-    now = get_current_moscow_time()
-    current_time_display = now.strftime('%H:%M')  # Для отображения
-    current_time_sql = get_current_time_for_sql()  # Для SQL запроса
+    now = get_moscow_time()
+    current_time = now.strftime('%H:%M')
     current_date = now.strftime('%Y-%m-%d')
+    
+    # Для SQL запроса используем то же московское время
+    sql_time = adjust_time_for_sql(current_time)
     
     # Вычисляем время через 2 часа
     two_hours_later = now + timedelta(hours=2)
@@ -222,16 +227,18 @@ def get_next_2_hours_slots():
     LIMIT 8
     '''
     
-    # Используем corrected_time для SQL запроса
-    c.execute(query, (current_date, current_time_sql))
+    c.execute(query, (current_date, sql_time))
     slots = c.fetchall()
     conn.close()
     
-    return slots, current_time_display, end_time
+    logger.info(f"Запрос слотов: дата={current_date}, время>={sql_time} (москва={current_time})")
+    logger.info(f"Найдено слотов: {len(slots)}")
+    
+    return slots, current_time, end_time
 
 def get_all_today_bookings():
     """Возвращает все бронирования на сегодня"""
-    today = get_today_date()
+    today = get_moscow_date()
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -253,6 +260,8 @@ def get_all_today_bookings():
     c.execute(query, (today,))
     slots = c.fetchall()
     conn.close()
+    
+    logger.info(f"Все бронирования на {today}: {len(slots)} слотов")
     
     return slots
 
@@ -570,7 +579,7 @@ async def show_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Получаем время для заголовка
-    current_time = get_current_time_str()
+    current_time = get_moscow_time_str()
     
     message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
     message += f"🕐 **Текущее время:** {current_time}\n\n"
@@ -638,7 +647,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Получаем время
-    current_time = get_current_time_str()
+    current_time = get_moscow_time_str()
     
     message = f"📋 **ВАШИ АКТИВНЫЕ ЗАПИСИ**\n"
     message += f"🕐 **Текущее время:** {current_time}\n\n"
@@ -669,7 +678,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает статистику"""
-    today = get_today_date()
+    today = get_moscow_date()
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -689,7 +698,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     # Получаем время
-    current_time = get_current_time_str()
+    current_time = get_moscow_time_str()
     
     # Статистика
     message = (
@@ -737,7 +746,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             slot_time, other_users = result
             
             # Получаем время для сообщения
-            current_time = get_current_time_str()
+            current_time = get_moscow_time_str()
             
             if other_users:
                 users_text = ", ".join(other_users)
@@ -780,7 +789,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             slot_time, user_name = result
             
             # Получаем время для сообщения
-            current_time = get_current_time_str()
+            current_time = get_moscow_time_str()
             
             message = (
                 f"🗑️ **ЗАПИСЬ ОТМЕНЕНА!**\n"
@@ -886,7 +895,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        current_time = get_current_time_str()
+        current_time = get_moscow_time_str()
         
         message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
         message += f"🕐 **Текущее время:** {current_time}\n\n"
