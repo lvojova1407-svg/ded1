@@ -910,4 +910,67 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_book_menu(update, context)
     elif text == "👤 МОИ ЗАПИСИ":
         await show_my_bookings(update, context)
-    elif text == "🏢
+    elif text == "🏢 ВСЕ БРОНИРОВАНИЯ":
+        await show_all_bookings(update, context)
+    elif text == "📊 СТАТИСТИКА":
+        await show_stats(update, context)
+    else:
+        await update.message.reply_text(
+            "Используйте кнопки ниже 👇",
+            reply_markup=get_main_keyboard()
+        )
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена диалога"""
+    await update.message.reply_text(
+        "Действие отменено.",
+        reply_markup=get_main_keyboard()
+    )
+    return ConversationHandler.END
+
+# ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
+def main():
+    """Запуск бота"""
+    # Инициализация БД
+    init_db()
+    
+    # Проверка токена
+    if not TOKEN:
+        logger.error("❌ ОШИБКА: Токен не найден!")
+        logger.error("Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
+        return
+    
+    # Создаем приложение
+    application = Application.builder().token(TOKEN).build()
+    
+    # ConversationHandler для регистрации
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            WAITING_FOR_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, register_name)
+            ]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+    
+    # Регистрируем обработчики
+    application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Логирование запуска
+    logger.info("=" * 50)
+    logger.info("🤖 БОТ ДЛЯ ЗАПИСИ НА ПЕРЕРЫВЫ")
+    logger.info("=" * 50)
+    logger.info(f"✅ Токен: {'Найден' if TOKEN else 'НЕ НАЙДЕН!'}")
+    logger.info(f"⏰ Слоты: {SLOT_DURATION} минут, {MAX_PEOPLE_PER_SLOT} чел/слот")
+    logger.info(f"📅 Слотов в день: {TOTAL_SLOTS_PER_DAY}")
+    logger.info("=" * 50)
+    logger.info("🚀 Бот запускается...")
+    
+    # Запускаем бота
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
