@@ -7,8 +7,4 @@ services:
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: RENDER_EXTERNAL_URL
-        fromService:
-          type: web
-          name: telegram-break-bot
-          property: url
+    healthCheckPath: /health
