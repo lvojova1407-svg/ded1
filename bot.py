@@ -12,12 +12,8 @@ from telegram.ext import (
     filters,
     ConversationHandler
 )
-from dotenv import load_dotenv
 
 # ==================== НАСТРОЙКИ ====================
-# Загружаем переменные окружения
-load_dotenv()
-
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 DB_NAME = 'breaks.db'
 
@@ -441,13 +437,15 @@ async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    now = datetime.now().strftime('%H:%M')
-    two_hours_later = (datetime.now() + timedelta(hours=2)).strftime('%H:%M')
+    now = datetime.now()
+    current_time = now.strftime('%H:%M')
+    two_hours_later = (now + timedelta(hours=2)).strftime('%H:%M')
     
+    # Формируем сообщение
     message = (
         f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-        f"Сейчас: {now}\n"
-        f"Показываем слоты: {now} → {two_hours_later} (2 часа)\n\n"
+        f"Сейчас: {current_time}\n"
+        f"Показываем слоты: {current_time} → {two_hours_later} (2 часа)\n\n"
         f"**Легенда:**\n"
         f"🟢 - свободно\n"
         f"🟡 - 1 место свободно\n"
@@ -583,16 +581,6 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  WHERE b.status = "active" AND ts.date = ?''', (today,))
     booked_slots = c.fetchone()[0] or 0
     
-    # Самый популярный слот
-    c.execute('''SELECT ts.slot_time, COUNT(b.id) as count
-                 FROM bookings b
-                 JOIN time_slots ts ON b.slot_id = ts.id
-                 WHERE b.status = "active" AND ts.date = ?
-                 GROUP BY ts.id
-                 ORDER BY count DESC
-                 LIMIT 1''', (today,))
-    popular_slot = c.fetchone()
-    
     conn.close()
     
     message = (
@@ -600,13 +588,8 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 **Участников:** {active_users} человек\n"
         f"📅 **Всего слотов:** {total_slots}\n"
         f"✅ **Занято слотов:** {booked_slots}\n"
-        f"🎯 **Свободно:** {total_slots - booked_slots} слотов\n"
+        f"🎯 **Свободно:** {total_slots - booked_slots} слотов"
     )
-    
-    if popular_slot:
-        message += f"🔥 **Самый популярный:** {popular_slot[0]} ({popular_slot[1]}/3 чел)\n"
-    
-    message += f"\n⏰ **Система:** {SLOT_DURATION} мин слоты, {MAX_PEOPLE_PER_SLOT} чел/слот"
     
     await update.message.reply_text(
         message,
@@ -681,13 +664,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slots = get_next_2_hours_slots()
         
         if slots:
-            now = datetime.now().strftime('%H:%M')
-            two_hours_later = (datetime.now() + timedelta(hours=2)).strftime('%H:%M')
+            now = datetime.now()
+            current_time = now.strftime('%H:%M')
+            two_hours_later = (now + timedelta(hours=2)).strftime('%H:%M')
             
             message = (
                 f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-                f"Сейчас: {now}\n"
-                f"Показываем слоты: {now} → {two_hours_later} (2 часа)\n\n"
+                f"Сейчас: {current_time}\n"
+                f"Показываем слоты: {current_time} → {two_hours_later} (2 часа)\n\n"
                 f"👇 Нажмите на слот для записи:"
             )
             
@@ -820,19 +804,7 @@ def main():
     logger.info("🚀 Бот запускается...")
     
     # Запускаем бота
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling()
 
 if __name__ == '__main__':
-    # Загружаем переменные окружения
-    load_dotenv()
-    
-    # Проверяем, где запускаем: локально или на Render
-    PORT = int(os.environ.get('PORT', 5000))
-    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-    
-    if not TOKEN:
-        print("❌ ОШИБКА: Токен не найден!")
-        print("Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
-    else:
-        print(f"✅ Токен найден, запускаем бота на порту {PORT}...")
-        main()
+    main()
