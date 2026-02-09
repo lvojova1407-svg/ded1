@@ -237,8 +237,14 @@ def get_next_2_hours_slots():
     return slots, current_time, end_time
 
 def get_all_today_bookings():
-    """Возвращает все бронирования на сегодня"""
+    """Возвращает все бронирования на ближайшие 2 часа"""
     today = get_moscow_date()
+    current_time = get_moscow_time_str()
+    
+    # Вычисляем время через 2 часа
+    now = get_moscow_time()
+    two_hours_later = now + timedelta(hours=2)
+    end_time = two_hours_later.strftime('%H:%M')
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -253,17 +259,19 @@ def get_all_today_bookings():
     LEFT JOIN bookings b ON ts.id = b.slot_id AND b.status = 'active'
     LEFT JOIN users u ON b.user_id = u.user_id
     WHERE ts.date = ?
+      AND SUBSTR(ts.slot_time, 1, 5) >= ?
+      AND SUBSTR(ts.slot_time, 1, 5) <= ?
     GROUP BY ts.id, ts.slot_time, ts.max_people
     ORDER BY ts.slot_time
     '''
     
-    c.execute(query, (today,))
+    c.execute(query, (today, current_time, end_time))
     slots = c.fetchall()
     conn.close()
     
-    logger.info(f"Все бронирования на {today}: {len(slots)} слотов")
+    logger.info(f"Все бронирования на {today} с {current_time} до {end_time}: {len(slots)} слотов")
     
-    return slots
+    return slots, current_time, end_time
 
 def book_slot(user_id, slot_id):
     """Бронирует слот для пользователя"""
@@ -568,21 +576,19 @@ async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает все бронирования на сегодня"""
-    slots = get_all_today_bookings()
+    """Показывает все бронирования на ближайшие 2 часа"""
+    slots, current_time, two_hours_later = get_all_today_bookings()
     
     if not slots:
         await update.message.reply_text(
-            "📭 На сегодня нет бронирований.",
+            f"📭 На ближайшие 2 часа ({current_time} → {two_hours_later}) нет бронирований.",
             reply_markup=get_main_keyboard()
         )
         return
     
-    # Получаем время для заголовка
-    current_time = get_moscow_time_str()
-    
-    message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
-    message += f"🕐 **Текущее время:** {current_time}\n\n"
+    message = f"🏢 **ВСЕ БРОНИРОВАНИЯ**\n"
+    message += f"🕐 **Текущее время:** {current_time}\n"
+    message += f"📅 **Показываем слоты:** {current_time} → {two_hours_later}\n\n"
     
     for slot_time, max_people, booked_count, people_names in slots:
         if booked_count == 0:
@@ -885,20 +891,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     
     elif data == "all_slots":
-        # Показать все бронирования
-        slots = get_all_today_bookings()
+        # Показать все бронирования на ближайшие 2 часа
+        slots, current_time, two_hours_later = get_all_today_bookings()
         
         if not slots:
             await query.edit_message_text(
-                "📭 На сегодня нет бронирований.",
+                f"📭 На ближайшие 2 часа ({current_time} → {two_hours_later}) нет бронирований.",
                 reply_markup=get_main_keyboard()
             )
             return
         
-        current_time = get_moscow_time_str()
-        
-        message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
-        message += f"🕐 **Текущее время:** {current_time}\n\n"
+        message = f"🏢 **ВСЕ БРОНИРОВАНИЯ**\n"
+        message += f"🕐 **Текущее время:** {current_time}\n"
+        message += f"📅 **Показываем слоты:** {current_time} → {two_hours_later}\n\n"
         
         for slot_time, max_people, booked_count, people_names in slots:
             if booked_count == 0:
