@@ -1,31 +1,3 @@
-# Фикс для Python 3.13 - создаем фиктивный модуль imghdr
-import sys
-
-# Создаем фиктивный модуль imghdr для Python 3.13
-class ImghdrModule:
-    @staticmethod
-    def what(file, h=None):
-        # Определяем тип изображения по расширению
-        if hasattr(file, 'name'):
-            filename = file.name
-        elif isinstance(file, str):
-            filename = file
-        else:
-            return None
-        
-        if filename.lower().endswith('.jpg') or filename.lower().endswith('.jpeg'):
-            return 'jpeg'
-        elif filename.lower().endswith('.png'):
-            return 'png'
-        elif filename.lower().endswith('.gif'):
-            return 'gif'
-        elif filename.lower().endswith('.bmp'):
-            return 'bmp'
-        return None
-
-# Заменяем модуль imghdr нашим фиктивным
-sys.modules['imghdr'] = ImghdrModule()
-
 import os
 import logging
 import sqlite3
@@ -848,7 +820,7 @@ def main():
     logger.info("🚀 Бот запускается...")
     
     # Запускаем бота
-    application.run_polling()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     # Загружаем переменные окружения
