@@ -1,3 +1,16 @@
+# Фикс для отсутствующего imghdr в Python 3.13
+try:
+    import imghdr
+except ImportError:
+    import sys
+    
+    class ImghdrModule:
+        @staticmethod
+        def what(file, h=None):
+            return None
+    
+    sys.modules['imghdr'] = ImghdrModule()
+
 import os
 import logging
 import sqlite3
@@ -12,8 +25,12 @@ from telegram.ext import (
     filters,
     ConversationHandler
 )
+from dotenv import load_dotenv
 
 # ==================== НАСТРОЙКИ ====================
+# Загружаем переменные окружения
+load_dotenv()
+
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 DB_NAME = 'breaks.db'
 
@@ -819,4 +836,16 @@ def main():
     application.run_polling()
 
 if __name__ == '__main__':
-    main()
+    # Загружаем переменные окружения
+    load_dotenv()
+    
+    # Проверяем, где запускаем: локально или на Render
+    PORT = int(os.environ.get('PORT', 5000))
+    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    
+    if not TOKEN:
+        print("❌ ОШИБКА: Токен не найден!")
+        print("Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
+    else:
+        print(f"✅ Токен найден, запускаем бота на порту {PORT}...")
+        main()
