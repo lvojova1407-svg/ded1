@@ -4,12 +4,11 @@ import sqlite3
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
-    Application, 
+    Updater,  # Изменено для версии 13.15
     CommandHandler, 
     CallbackQueryHandler, 
-    ContextTypes, 
     MessageHandler, 
-    filters,
+    Filters,  # Изменено с filters на Filters
     ConversationHandler
 )
 
@@ -22,9 +21,6 @@ SLOT_DURATION = 15  # минут
 MAX_PEOPLE_PER_SLOT = 3
 TOTAL_SLOTS_PER_DAY = 96  # 24ч * 4 слота
 
-# NTP сервер для точного времени
-
-
 # Состояния для ConversationHandler
 WAITING_FOR_NAME = 1
 
@@ -34,12 +30,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# ==================== ФУНКЦИИ ВРЕМЕНИ ====================
-def get_current_time():
-    """Возвращает текущее время в формате HH:MM"""
-    now = datetime.now()
-    return now.strftime('%H:%M'), now
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -173,8 +163,9 @@ def get_user_fio(telegram_id):
     return result[0] if result else None
 
 def get_next_2_hours_slots():
-    """Возвращает слоты на ближайшие 2 часа - с использованием точного времени"""
-    current_time_str, now = get_current_time()
+    """Возвращает слоты на ближайшие 2 часа"""
+    now = datetime.now()
+    current_time = now.strftime('%H:%M')
     current_date = now.strftime('%Y-%m-%d')
     
     # Вычисляем время через 2 часа
@@ -202,11 +193,11 @@ def get_next_2_hours_slots():
     LIMIT 8
     '''
     
-    c.execute(query, (current_date, current_time_str))
+    c.execute(query, (current_date, current_time))
     slots = c.fetchall()
     conn.close()
     
-    return slots, current_time_str, end_time
+    return slots, current_time, end_time
 
 def get_all_today_bookings():
     """Возвращает все бронирования на сегодня"""
@@ -276,25 +267,37 @@ def book_slot(user_id, slot_id):
     conn.close()
     return True, (slot_time, other_users)
 
-def cancel_booking(user_id, slot_id):
-    """Отменяет бронирование"""
+def cancel_booking_by_id(booking_id):
+    """Отменяет бронирование по ID бронирования"""
     conn = get_db_connection()
     c = conn.cursor()
     
+    # Получаем информацию о бронировании
+    c.execute('''SELECT b.user_id, ts.slot_time, u.full_name 
+                 FROM bookings b
+                 JOIN time_slots ts ON b.slot_id = ts.id
+                 JOIN users u ON b.user_id = u.user_id
+                 WHERE b.id = ? AND b.status = "active"''', (booking_id,))
+    booking = c.fetchone()
+    
+    if not booking:
+        conn.close()
+        return False, "Бронирование не найдено или уже отменено"
+    
+    user_id, slot_time, user_name = booking
+    
+    # Отменяем бронирование
     c.execute('''UPDATE bookings SET status = "cancelled" 
-                 WHERE user_id = ? AND slot_id = ? AND status = "active"''',
-              (user_id, slot_id))
+                 WHERE id = ? AND status = "active"''', (booking_id,))
     success = c.rowcount > 0
     
     if success:
-        c.execute('SELECT slot_time FROM time_slots WHERE id = ?', (slot_id,))
-        slot_time = c.fetchone()[0]
         conn.commit()
         conn.close()
-        return True, slot_time
+        return True, (slot_time, user_name)
     
     conn.close()
-    return False, None
+    return False, "Ошибка при отмене бронирования"
 
 def get_user_bookings(telegram_id):
     """Получает все активные бронирования пользователя"""
@@ -375,8 +378,40 @@ def get_slots_keyboard(slots):
     
     return InlineKeyboardMarkup(keyboard)
 
+def get_my_bookings_keyboard(bookings):
+    """Клавиатура с кнопками отмены для моих записей"""
+    keyboard = []
+    
+    for i, (booking_id, slot_time, max_people, booked_count, other_users) in enumerate(bookings, 1):
+        # Кнопка с информацией о слоте
+        if booked_count >= max_people:
+            icon = "🔴"
+        elif booked_count == max_people - 1:
+            icon = "🟡"
+        else:
+            icon = "🟢"
+        
+        text = f"{i}. {icon} {slot_time}"
+        callback_data = f"info_{booking_id}"
+        
+        # Кнопка отмены
+        cancel_text = f"❌ Отменить {i}"
+        cancel_callback = f"cancel_{booking_id}"
+        
+        keyboard.append([
+            InlineKeyboardButton(text, callback_data=callback_data),
+            InlineKeyboardButton(cancel_text, callback_data=cancel_callback)
+        ])
+    
+    # Кнопка возврата
+    keyboard.append([
+        InlineKeyboardButton("🔙 НАЗАД", callback_data="back_to_menu")
+    ])
+    
+    return InlineKeyboardMarkup(keyboard)
+
 # ==================== КОМАНДЫ БОТА ====================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update, context):
     """Команда /start"""
     user = update.effective_user
     
@@ -385,7 +420,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_fio:
         # Пользователь уже зарегистрирован
-        await update.message.reply_text(
+        update.message.reply_text(
             f"👋 С возвращением, **{user_fio}**!\n\n"
             "🤖 Ваше ФИО сохранено в системе.\n"
             "При записи на перерыв оно будет отображаться в таймслотах.\n\n"
@@ -397,7 +432,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # Проверяем, можно ли зарегистрировать нового пользователя
         if not can_register_new_user():
-            await update.message.reply_text(
+            update.message.reply_text(
                 "❌ **Достигнут лимит пользователей!**\n\n"
                 "В системе уже зарегистрировано максимальное количество пользователей (50).\n"
                 "Новая регистрация временно недоступна.",
@@ -406,7 +441,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         
         # Просим зарегистрироваться
-        await update.message.reply_text(
+        update.message.reply_text(
             "🤖 Привет! Я бот для записи на перерывы.\n\n"
             "📝 Для отображения вашего имени в списках\n"
             "введите ваше ФИО:\n\n"
@@ -417,14 +452,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return WAITING_FOR_NAME
 
-async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def register_name(update, context):
     """Регистрация ФИО пользователя"""
     user = update.effective_user
     full_name = update.message.text.strip()
     
     # Простая валидация
     if len(full_name) < 3:
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ Слишком короткое имя. Введите ФИО полностью.\n"
             "Пример: **Иванов Иван Иванович**",
             parse_mode='Markdown'
@@ -435,7 +470,7 @@ async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_or_create_user(user.id, user.username, full_name)
     
     if user_id:
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Готово!\n\n"
             f"👤 Ваше имя для отображения:\n"
             f"**{full_name}**\n\n"
@@ -444,41 +479,41 @@ async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard()
         )
     else:
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ Ошибка регистрации. Попробуйте еще раз.",
             reply_markup=get_main_keyboard()
         )
     
     return ConversationHandler.END
 
-async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню записи с ТОЧНЫМ временем"""
+def show_book_menu(update, context):
+    """Показывает меню записи"""
     user = update.effective_user
     
     # Проверяем регистрацию
     if not get_user_fio(user.id):
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ Сначала зарегистрируйтесь!\n"
             "Используйте команду /start",
             reply_markup=get_main_keyboard()
         )
         return
     
-    # Получаем слоты и точное время
+    # Получаем слоты
     slots, current_time, two_hours_later = get_next_2_hours_slots()
     
     if not slots:
-        await update.message.reply_text(
+        update.message.reply_text(
             f"⏰ На ближайшие 2 часа ({current_time} → {two_hours_later}) нет доступных слотов.\n"
             "Попробуйте позже или посмотрите все слоты.",
             reply_markup=get_main_keyboard()
         )
         return
     
-    # Формируем сообщение с ТОЧНЫМ временем
+    # Формируем сообщение
     message = (
         f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-        f"🕐 **Точное время:** {current_time}\n"
+        f"🕐 **Текущее время:** {current_time}\n"
         f"📅 **Показываем слоты:** {current_time} → {two_hours_later} (2 часа)\n\n"
         f"**Легенда:**\n"
         f"🟢 - свободно\n"
@@ -487,25 +522,25 @@ async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👇 Нажмите на слот для записи:"
     )
     
-    await update.message.reply_text(
+    update.message.reply_text(
         message,
         parse_mode='Markdown',
         reply_markup=get_slots_keyboard(slots)
     )
 
-async def show_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def show_all_bookings(update, context):
     """Показывает все бронирования на сегодня"""
     slots = get_all_today_bookings()
     
     if not slots:
-        await update.message.reply_text(
+        update.message.reply_text(
             "📭 На сегодня нет бронирований.",
             reply_markup=get_main_keyboard()
         )
         return
     
-    # Получаем точное время для заголовка
-    current_time, _ = get_current_time()
+    # Получаем время для заголовка
+    current_time = datetime.now().strftime('%H:%M')
     
     message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
     message += f"🕐 **Текущее время:** {current_time}\n\n"
@@ -542,20 +577,20 @@ async def show_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message += f"\n📊 **ИТОГО:** {len([s for s in slots if s[2] > 0])} слотов занято"
     
-    await update.message.reply_text(
+    update.message.reply_text(
         message,
         parse_mode='Markdown',
         reply_markup=get_main_keyboard()
     )
 
-async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает мои бронирования"""
+def show_my_bookings(update, context):
+    """Показывает мои бронирования с кнопками отмены"""
     user = update.effective_user
     
     # Проверяем регистрацию
     user_fio = get_user_fio(user.id)
     if not user_fio:
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ Сначала зарегистрируйтесь!\n"
             "Используйте команду /start",
             reply_markup=get_main_keyboard()
@@ -565,15 +600,15 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bookings = get_user_bookings(user.id)
     
     if not bookings:
-        await update.message.reply_text(
+        update.message.reply_text(
             "📭 У вас нет активных записей.\n\n"
             "👇 Хотите записаться?",
             reply_markup=get_main_keyboard()
         )
         return
     
-    # Получаем точное время
-    current_time, _ = get_current_time()
+    # Получаем время
+    current_time = datetime.now().strftime('%H:%M')
     
     message = f"📋 **ВАШИ АКТИВНЫЕ ЗАПИСИ**\n"
     message += f"🕐 **Текущее время:** {current_time}\n\n"
@@ -592,20 +627,18 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message += f"   👥 С вами: {other_users}\n"
         else:
             message += f"   👤 Пока вы один\n"
-        
-        # Добавляем кнопку отмены
-        context.user_data[f"cancel_{i}"] = booking_id
     
     message += f"\n📊 **Всего:** {len(bookings)} записей"
+    message += f"\n\n👇 Нажмите ❌ чтобы отменить запись:"
     
-    await update.message.reply_text(
+    update.message.reply_text(
         message,
         parse_mode='Markdown',
-        reply_markup=get_main_keyboard()
+        reply_markup=get_my_bookings_keyboard(bookings)
     )
 
-async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статистику - УПРОЩЕННЫЙ ВАРИАНТ"""
+def show_stats(update, context):
+    """Показывает статистику"""
     today = datetime.now().strftime('%Y-%m-%d')
     
     conn = get_db_connection()
@@ -625,10 +658,10 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
     
-    # Получаем точное время
-    current_time, _ = get_current_time()
+    # Получаем время
+    current_time = datetime.now().strftime('%H:%M')
     
-    # Упрощенная статистика
+    # Статистика
     message = (
         f"📊 **СТАТИСТИКА НА СЕГОДНЯ**\n"
         f"🕐 **Текущее время:** {current_time}\n\n"
@@ -638,16 +671,16 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 **Свободно:** {total_slots - booked_slots} слотов"
     )
     
-    await update.message.reply_text(
+    update.message.reply_text(
         message,
         parse_mode='Markdown',
         reply_markup=get_main_keyboard()
     )
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик inline-кнопок с ТОЧНЫМ временем"""
+def button_handler(update, context):
+    """Обработчик inline-кнопок"""
     query = update.callback_query
-    await query.answer()
+    query.answer()
     
     user = query.from_user
     data = query.data
@@ -655,7 +688,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем регистрацию
     user_fio = get_user_fio(user.id)
     if not user_fio:
-        await query.edit_message_text(
+        query.edit_message_text(
             "❌ Сначала зарегистрируйтесь!\n"
             "Используйте команду /start",
             reply_markup=get_main_keyboard()
@@ -673,8 +706,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if success:
             slot_time, other_users = result
             
-            # Получаем точное время для сообщения
-            current_time, _ = get_current_time()
+            # Получаем время для сообщения
+            current_time = datetime.now().strftime('%H:%M')
             
             if other_users:
                 users_text = ", ".join(other_users)
@@ -696,119 +729,199 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📋 Ваши записи: /my"
                 )
             
-            await query.edit_message_text(
+            query.edit_message_text(
                 message,
                 parse_mode='Markdown'
             )
         else:
-            await query.edit_message_text(
+            query.edit_message_text(
                 f"❌ {result}\n\n"
                 f"Попробуйте другой слот.",
                 reply_markup=query.message.reply_markup
             )
     
+    elif data.startswith("cancel_"):
+        # Отмена бронирования
+        booking_id = int(data.split("_")[1])
+        
+        success, result = cancel_booking_by_id(booking_id)
+        
+        if success:
+            slot_time, user_name = result
+            
+            # Получаем время для сообщения
+            current_time = datetime.now().strftime('%H:%M')
+            
+            message = (
+                f"🗑️ **ЗАПИСЬ ОТМЕНЕНА!**\n"
+                f"🕐 **Время отмены:** {current_time}\n\n"
+                f"🎯 **Слот:** {slot_time}\n"
+                f"👤 **Имя:** {user_name}\n\n"
+                f"✅ Слот теперь свободен для записи другими."
+            )
+            
+            query.edit_message_text(
+                message,
+                parse_mode='Markdown'
+            )
+        else:
+            query.answer(f"❌ {result}", show_alert=True)
+    
+    elif data.startswith("info_"):
+        # Информация о бронировании
+        booking_id = int(data.split("_")[1])
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        c.execute('''SELECT ts.slot_time, ts.max_people, 
+                     (SELECT COUNT(*) FROM bookings b2 
+                      WHERE b2.slot_id = ts.id AND b2.status = "active") as booked_count,
+                     (SELECT GROUP_CONCAT(u2.full_name, ', ') FROM bookings b2
+                      JOIN users u2 ON b2.user_id = u2.user_id
+                      WHERE b2.slot_id = ts.id AND b2.status = "active" AND b2.user_id != ?) as other_users
+                 FROM bookings b
+                 JOIN time_slots ts ON b.slot_id = ts.id
+                 WHERE b.id = ? AND b.status = "active"''', 
+                (user_id, booking_id))
+        
+        booking_info = c.fetchone()
+        conn.close()
+        
+        if booking_info:
+            slot_time, max_people, booked_count, other_users = booking_info
+            
+            if booked_count >= max_people:
+                icon = "🔴"
+                status = "заполнен"
+            elif booked_count == max_people - 1:
+                icon = "🟡"
+                status = "1 место свободно"
+            else:
+                icon = "🟢"
+                status = "свободно"
+            
+            message = (
+                f"📋 **ИНФОРМАЦИЯ О ЗАПИСИ**\n\n"
+                f"{icon} **Слот:** {slot_time}\n"
+                f"📊 **Статус:** {status} ({booked_count}/{max_people})\n"
+            )
+            
+            if other_users:
+                message += f"👥 **С вами:** {other_users}\n"
+            else:
+                message += f"👤 **Вы один в этом слоте**\n"
+            
+            message += f"\n❌ Нажмите кнопку отмены чтобы освободить слот."
+            
+            query.answer(message, show_alert=True)
+        else:
+            query.answer("❌ Запись не найдена", show_alert=True)
+    
     elif data.startswith("full_"):
         # Слот занят
-        await query.answer("❌ Этот слот полностью занят!", show_alert=True)
+        query.answer("❌ Этот слот полностью занят!", show_alert=True)
     
     elif data == "refresh":
-        # Обновить список слотов с ТОЧНЫМ временем
+        # Обновить список слотов
         slots, current_time, two_hours_later = get_next_2_hours_slots()
         
         if slots:
             message = (
                 f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-                f"🕐 **Точное время:** {current_time}\n"
+                f"🕐 **Текущее время:** {current_time}\n"
                 f"📅 **Показываем слоты:** {current_time} → {two_hours_later} (2 часа)\n\n"
                 f"👇 Нажмите на слот для записи:"
             )
             
-            await query.edit_message_text(
+            query.edit_message_text(
                 message,
                 parse_mode='Markdown',
                 reply_markup=get_slots_keyboard(slots)
             )
         else:
-            await query.edit_message_text(
+            query.edit_message_text(
                 f"⏰ На ближайшие 2 часа ({current_time} → {two_hours_later}) нет доступных слотов.",
                 reply_markup=get_main_keyboard()
             )
     
     elif data == "all_slots":
         # Показать все бронирования
-        await show_all_bookings_for_button(query)
-
-async def show_all_bookings_for_button(query):
-    """Показывает все бронирования для inline-кнопки"""
-    slots = get_all_today_bookings()
-    
-    if not slots:
-        await query.edit_message_text(
-            "📭 На сегодня нет бронирований.",
+        slots = get_all_today_bookings()
+        
+        if not slots:
+            query.edit_message_text(
+                "📭 На сегодня нет бронирований.",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        current_time = datetime.now().strftime('%H:%M')
+        
+        message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
+        message += f"🕐 **Текущее время:** {current_time}\n\n"
+        
+        for slot_time, max_people, booked_count, people_names in slots:
+            if booked_count == 0:
+                icon = "🟢"
+                info = "свободно"
+            elif booked_count == max_people:
+                icon = "🔴"
+                names = people_names.split(', ') if people_names else []
+                short_names = []
+                for name in names[:3]:
+                    parts = name.split()
+                    if len(parts) >= 2:
+                        short_names.append(f"{parts[0]} {parts[1][0]}.")
+                info = ', '.join(short_names)
+                if booked_count > 3:
+                    info += f" (+{booked_count - 3})"
+            else:
+                icon = "🟡"
+                names = people_names.split(', ') if people_names else []
+                short_names = []
+                for name in names:
+                    parts = name.split()
+                    if len(parts) >= 2:
+                        short_names.append(f"{parts[0]} {parts[1][0]}.")
+                info = ', '.join(short_names) if short_names else "свободно"
+            
+            message += f"{icon} **{slot_time}** - {info}\n"
+        
+        query.edit_message_text(
+            message,
+            parse_mode='Markdown',
             reply_markup=get_main_keyboard()
         )
-        return
     
-    # Получаем точное время
-    current_time, _ = get_current_time()
-    
-    message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
-    message += f"🕐 **Текущее время:** {current_time}\n\n"
-    
-    for slot_time, max_people, booked_count, people_names in slots:
-        if booked_count == 0:
-            icon = "🟢"
-            info = "свободно"
-        elif booked_count == max_people:
-            icon = "🔴"
-            names = people_names.split(', ') if people_names else []
-            short_names = []
-            for name in names[:3]:  # Показываем только первых 3
-                parts = name.split()
-                if len(parts) >= 2:
-                    short_names.append(f"{parts[0]} {parts[1][0]}.")
-            info = ', '.join(short_names)
-            if booked_count > 3:
-                info += f" (+{booked_count - 3})"
-        else:
-            icon = "🟡"
-            names = people_names.split(', ') if people_names else []
-            short_names = []
-            for name in names:
-                parts = name.split()
-                if len(parts) >= 2:
-                    short_names.append(f"{parts[0]} {parts[1][0]}.")
-            info = ', '.join(short_names) if short_names else "свободно"
-        
-        message += f"{icon} **{slot_time}** - {info}\n"
-    
-    await query.edit_message_text(
-        message,
-        parse_mode='Markdown',
-        reply_markup=get_main_keyboard()
-    )
+    elif data == "back_to_menu":
+        # Возврат в главное меню
+        query.edit_message_text(
+            "👇 Выберите действие:",
+            reply_markup=get_main_keyboard()
+        )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_message(update, context):
     """Обработчик текстовых сообщений"""
     text = update.message.text
     
     if text == "📅 ЗАПИСАТЬСЯ":
-        await show_book_menu(update, context)
+        show_book_menu(update, context)
     elif text == "👤 МОИ ЗАПИСИ":
-        await show_my_bookings(update, context)
+        show_my_bookings(update, context)
     elif text == "🏢 ВСЕ БРОНИРОВАНИЯ":
-        await show_all_bookings(update, context)
+        show_all_bookings(update, context)
     elif text == "📊 СТАТИСТИКА":
-        await show_stats(update, context)
+        show_stats(update, context)
     else:
-        await update.message.reply_text(
+        update.message.reply_text(
             "Используйте кнопки ниже 👇",
             reply_markup=get_main_keyboard()
         )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cancel(update, context):
     """Отмена диалога"""
-    await update.message.reply_text(
+    update.message.reply_text(
         "Действие отменено.",
         reply_markup=get_main_keyboard()
     )
@@ -826,24 +939,27 @@ def main():
         logger.error("Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
         return
     
-    # Создаем приложение
-    application = Application.builder().token(TOKEN).build()
+    # Создаем updater
+    updater = Updater(TOKEN, use_context=True)
+    
+    # Получаем dispatcher
+    dp = updater.dispatcher
     
     # ConversationHandler для регистрации
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             WAITING_FOR_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, register_name)
+                MessageHandler(Filters.text & ~Filters.command, register_name)
             ]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
     
     # Регистрируем обработчики
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    dp.add_handler(conv_handler)
+    dp.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
     # Логирование запуска
     logger.info("=" * 50)
@@ -856,7 +972,8 @@ def main():
     logger.info("🚀 Бот запускается...")
     
     # Запускаем бота
-    application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main()
