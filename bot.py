@@ -23,7 +23,7 @@ MAX_PEOPLE_PER_SLOT = 3
 TOTAL_SLOTS_PER_DAY = 96  # 24ч * 4 слота
 
 # NTP сервер для точного времени
-NTP_SERVERS = ['time.google.com', 'time.windows.com', 'pool.ntp.org']
+
 
 # Состояния для ConversationHandler
 WAITING_FOR_NAME = 1
@@ -36,37 +36,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== ФУНКЦИИ ВРЕМЕНИ ====================
-def get_accurate_time():
-    """Получает точное время с NTP-сервера"""
-    try:
-        client = ntplib.NTPClient()
-        # Пробуем разные серверы
-        for server in NTP_SERVERS:
-            try:
-                response = client.request(server, timeout=2)
-                ntp_time = datetime.fromtimestamp(response.tx_time)
-                logger.info(f"✅ Время получено с NTP-сервера: {server}")
-                return ntp_time
-            except:
-                continue
-        
-        # Если не удалось получить время с NTP, используем локальное время
-        logger.warning("⚠️ Не удалось получить время с NTP-серверов, используется локальное время")
-        return datetime.now()
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения времени: {e}")
-        return datetime.now()
-
 def get_current_time():
     """Возвращает текущее время в формате HH:MM"""
-    try:
-        accurate_time = get_accurate_time()
-        return accurate_time.strftime('%H:%M'), accurate_time
-    except:
-        # Fallback на локальное время
-        now = datetime.now()
-        return now.strftime('%H:%M'), now
+    now = datetime.now()
+    return now.strftime('%H:%M'), now
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
