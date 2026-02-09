@@ -104,6 +104,15 @@ def get_db_connection():
     """Возвращает соединение с БД"""
     return sqlite3.connect(DB_NAME)
 
+def can_register_new_user():
+    """Проверяет, можно ли зарегистрировать нового пользователя (лимит 50)"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM users')
+    total_users = c.fetchone()[0]
+    conn.close()
+    return total_users < 50
+
 def get_or_create_user(telegram_id, username, full_name=None):
     """Получает или создает пользователя"""
     conn = get_db_connection()
@@ -113,25 +122,37 @@ def get_or_create_user(telegram_id, username, full_name=None):
     c.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
     user = c.fetchone()
     
-    if not user and full_name:
-        # Создаем нового пользователя
-        c.execute('''INSERT INTO users (telegram_id, username, full_name)
-                     VALUES (?, ?, ?)''',
-                  (telegram_id, username, full_name))
-        conn.commit()
-        user_id = c.lastrowid
-    elif user:
+    # Если пользователь уже существует - возвращаем его
+    if user:
         user_id = user[0]
         # Обновляем имя если оно изменилось
         if full_name and user[3] != full_name:
             c.execute('UPDATE users SET full_name = ? WHERE user_id = ?',
                       (full_name, user_id))
             conn.commit()
-    else:
-        user_id = None
+        conn.close()
+        return user_id
+    
+    # Если это новый пользователь, проверяем лимит
+    if full_name:
+        c.execute('SELECT COUNT(*) FROM users')
+        total_users = c.fetchone()[0]
+        
+        if total_users >= 50:
+            conn.close()
+            return None  # Лимит достигнут
+        
+        # Создаем нового пользователя
+        c.execute('''INSERT INTO users (telegram_id, username, full_name)
+                     VALUES (?, ?, ?)''',
+                  (telegram_id, username, full_name))
+        conn.commit()
+        user_id = c.lastrowid
+        conn.close()
+        return user_id
     
     conn.close()
-    return user_id
+    return None
 
 def get_user_fio(telegram_id):
     """Получает ФИО пользователя"""
@@ -367,6 +388,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     else:
+        # Проверяем, можно ли зарегистрировать нового пользователя
+        if not can_register_new_user():
+            await update.message.reply_text(
+                "❌ **Достигнут лимит пользователей!**\n\n"
+                "В системе уже зарегистрировано максимальное количество пользователей (50).\n"
+                "Новая регистрация временно недоступна.",
+                parse_mode='Markdown'
+            )
+            return ConversationHandler.END
+        
         # Просим зарегистрироваться
         await update.message.reply_text(
             "🤖 Привет! Я бот для записи на перерывы.\n\n"
@@ -414,7 +445,7 @@ async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню записи"""
+    """Показывает меню записи - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
     user = update.effective_user
     
     # Проверяем регистрацию
@@ -441,7 +472,7 @@ async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = now.strftime('%H:%M')
     two_hours_later = (now + timedelta(hours=2)).strftime('%H:%M')
     
-    # Формируем сообщение
+    # Формируем сообщение - УБРАН НЕКОРРЕКТНЫЙ ЗАГОЛОВОК
     message = (
         f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
         f"Сейчас: {current_time}\n"
@@ -563,7 +594,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает статистику"""
+    """Показывает статистику - УПРОЩЕННЫЙ ВАРИАНТ"""
     today = datetime.now().strftime('%Y-%m-%d')
     
     conn = get_db_connection()
@@ -583,6 +614,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
     
+    # Упрощенная статистика - без "Самый популярный" и "Система"
     message = (
         f"📊 **СТАТИСТИКА НА СЕГОДНЯ**\n\n"
         f"👥 **Участников:** {active_users} человек\n"
@@ -598,7 +630,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик inline-кнопок"""
+    """Обработчик inline-кнопок - ИСПРАВЛЕННЫЙ ВАРИАНТ"""
     query = update.callback_query
     await query.answer()
     
@@ -660,7 +692,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Этот слот полностью занят!", show_alert=True)
     
     elif data == "refresh":
-        # Обновить список слотов
+        # Обновить список слотов - ИСПРАВЛЕННЫЙ ВАРИАНТ
         slots = get_next_2_hours_slots()
         
         if slots:
