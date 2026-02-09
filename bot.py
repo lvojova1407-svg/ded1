@@ -1,7 +1,6 @@
 import os
 import logging
 import sqlite3
-import asyncio
 from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -18,14 +17,6 @@ from telegram.ext import (
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 DB_NAME = 'breaks.db'
 
-# Render настройки
-PORT = int(os.environ.get('PORT', 8443))  # Порт для веб-сервера
-RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')  # Render использует эту переменную
-
-# Настройки кронтинга
-PING_INTERVAL = 300  # Пинг каждые 5 минут (300 секунд)
-PING_ENABLED = bool(RENDER_URL)  # Включаем кронтинг только если есть URL (на Render)
-
 # Константы
 SLOT_DURATION = 15  # минут
 MAX_PEOPLE_PER_SLOT = 3
@@ -41,118 +32,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# ==================== КРОНТИНГ (PING SERVICE) ====================
-async def ping_self():
-    """Периодически пингует сервер чтобы он не засыпал на Render"""
-    if not PING_ENABLED:
-        logger.info("Кронтинг отключен (нет URL)")
-        return
-    
-    import aiohttp
-    import random
-    
-    logger.info(f"🚀 Запускаю кронтинг: пинг каждые {PING_INTERVAL//60} минут")
-    logger.info(f"🌐 URL для пинга: {RENDER_URL}")
-    
-    # Добавляем небольшой случайный интервал чтобы избежать точного периода
-    jitter = random.randint(0, 30)
-    await asyncio.sleep(jitter)
-    
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                # Пингуем несколько эндпоинтов для надежности
-                endpoints = ['/', '/health']
-                
-                for endpoint in endpoints:
-                    try:
-                        url = f"{RENDER_URL}{endpoint}"
-                        timeout = aiohttp.ClientTimeout(total=10)
-                        
-                        async with session.get(url, timeout=timeout) as response:
-                            if response.status == 200:
-                                logger.debug(f"✅ Ping успешен: {endpoint} (статус: {response.status})")
-                            else:
-                                logger.warning(f"⚠️ Ping неожиданный статус: {endpoint} (статус: {response.status})")
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка пинга {endpoint}: {e}")
-                
-                # Логируем успешный цикл пинга
-                current_time = get_moscow_time_str()
-                logger.info(f"🕐 {current_time}: Сервер активен, следующий пинг через {PING_INTERVAL//60} мин")
-                
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка кронтинга: {e}")
-            # При серьезной ошибке ждем дольше
-            await asyncio.sleep(60)
-        
-        # Ждем перед следующим пингом
-        await asyncio.sleep(PING_INTERVAL)
-
-async def health_check(request):
-    """Эндпоинт для проверки здоровья (для кронтинга)"""
-    from aiohttp import web
-    current_time = get_moscow_time_str()
-    return web.Response(
-        text=f"✅ Бот работает\nВремя: {current_time}\nБД: {DB_NAME}\nПользователей: {get_user_count()}",
-        headers={'Content-Type': 'text/plain'}
-    )
-
-async def home_page(request):
-    """Главная страница (для пинга)"""
-    from aiohttp import web
-    html_content = f"""
-    <html>
-        <head>
-            <title>🤖 Бот для записи на перерывы</title>
-            <meta charset="utf-8">
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; text-align: center; }}
-                .container {{ max-width: 800px; margin: 0 auto; }}
-                .status {{ color: green; font-weight: bold; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🤖 Бот для записи на перерывы</h1>
-                <p class="status">✅ Сервер работает</p>
-                <p>🕐 Текущее время (Москва): {get_moscow_time_str()}</p>
-                <p>📊 Пользователей в системе: {get_user_count()}</p>
-                <p>📅 Слотов сегодня: {get_today_slots_count()}</p>
-                <p>🔧 <a href="/health">Проверка здоровья</a></p>
-                <hr>
-                <p><small>Автоматический пинг каждые {PING_INTERVAL//60} минут для поддержания активности</small></p>
-            </div>
-        </body>
-    </html>
-    """
-    return web.Response(text=html_content, content_type='text/html')
-
-def get_user_count():
-    """Получает количество пользователей для отображения на странице"""
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute('SELECT COUNT(*) FROM users')
-        count = c.fetchone()[0]
-        conn.close()
-        return count
-    except:
-        return "ошибка"
-
-def get_today_slots_count():
-    """Получает количество слотов на сегодня"""
-    try:
-        today = get_moscow_date()
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute('SELECT COUNT(*) FROM time_slots WHERE date = ?', (today,))
-        count = c.fetchone()[0]
-        conn.close()
-        return count
-    except:
-        return "ошибка"
 
 # ==================== ФУНКЦИИ ВРЕМЕНИ (МОСКВА UTC+3) ====================
 def get_moscow_time():
@@ -173,6 +52,7 @@ def adjust_time_for_sql(time_str):
     Преобразует время из московского в "базовое" для SQL сравнения.
     Слоты хранятся в локальном времени (уже московском).
     """
+    # Время уже в московском, просто возвращаем как есть
     return time_str
 
 # ==================== БАЗА ДАННЫХ ====================
@@ -1091,29 +971,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# ==================== ВЕБ-СЕРВЕР ДЛЯ КРОНТИНГА ====================
-async def start_web_server():
-    """Запускает веб-сервер для кронтинга"""
-    from aiohttp import web
-    
-    # Создаем aiohttp приложение
-    app = web.Application()
-    
-    # Регистрируем маршруты
-    app.router.add_get("/", home_page)
-    app.router.add_get("/health", health_check)
-    
-    # Запускаем сервер
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    
-    logger.info(f"✅ Веб-сервер для кронтинга запущен на порту {PORT}")
-    logger.info(f"🌐 Доступен по адресу: {RENDER_URL or 'локально'}")
-    
-    return runner
-
 # ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
 def main():
     """Запуск бота"""
@@ -1153,57 +1010,11 @@ def main():
     logger.info(f"⏰ Слоты: {SLOT_DURATION} минут, {MAX_PEOPLE_PER_SLOT} чел/слот")
     logger.info(f"📅 Слотов в день: {TOTAL_SLOTS_PER_DAY}")
     logger.info(f"🌍 Часовой пояс: Москва (UTC+3)")
+    logger.info("=" * 50)
+    logger.info("🚀 Бот запускается...")
     
-    # Запускаем в режиме polling с кронтингом
-    if RENDER_URL:
-        logger.info(f"🌐 Режим: POLLING + КРОНТИНГ (для Render)")
-        logger.info(f"🌐 Render URL: {RENDER_URL}")
-        logger.info(f"🌐 Порт: {PORT}")
-        logger.info(f"🔄 Кронтинг каждые: {PING_INTERVAL//60} минут")
-        
-        # Запускаем веб-сервер для кронтинга в отдельном потоке
-        import threading
-        
-        def run_web_server():
-            """Запускает веб-сервер в отдельном потоке"""
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def start_server():
-                runner = await start_web_server()
-                
-                # Запускаем кронтинг
-                ping_task = asyncio.create_task(ping_self())
-                
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    logger.info("🛑 Останавливаю веб-сервер...")
-                    await runner.cleanup()
-                    ping_task.cancel()
-            
-            loop.run_until_complete(start_server())
-        
-        # Запускаем веб-сервер в отдельном потоке
-        web_thread = threading.Thread(target=run_web_server, daemon=True)
-        web_thread.start()
-        
-        # Даем время запуститься веб-серверу
-        import time
-        time.sleep(2)
-        
-        logger.info("🚀 Запускаю бота в режиме polling...")
-        
-        # Запускаем бота в основном потоке
-        application.run_polling(drop_pending_updates=True, close_loop=False)
-        
-    else:
-        logger.info("🔁 Режим: POLLING (для локальной разработки)")
-        logger.info("=" * 50)
-        logger.info("🚀 Бот запускается...")
-        
-        # Запуск в режиме polling (для локальной разработки)
-        application.run_polling(drop_pending_updates=True)
+    # Запускаем бота
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
