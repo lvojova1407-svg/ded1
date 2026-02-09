@@ -17,6 +17,10 @@ from telegram.ext import (
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 DB_NAME = 'breaks.db'
 
+# Настройки для веб-хуков (для Render/Railway/Heroku)
+PORT = int(os.environ.get('PORT', 8443))  # Порт для веб-сервера
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')  # Ваш URL с HTTPS
+
 # Константы
 SLOT_DURATION = 15  # минут
 MAX_PEOPLE_PER_SLOT = 3
@@ -971,6 +975,20 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
+# ==================== ВЕБ-ХУКИ ====================
+async def set_webhook():
+    """Устанавливает веб-хук для бота"""
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/{TOKEN}"
+        logger.info(f"🌐 Устанавливаю веб-хук: {webhook_url}")
+        return webhook_url
+    return None
+
+async def health_check(request):
+    """Эндпоинт для проверки здоровья (для Render/Railway)"""
+    from aiohttp import web
+    return web.Response(text="Bot is running")
+
 # ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
 def main():
     """Запуск бота"""
@@ -1010,11 +1028,55 @@ def main():
     logger.info(f"⏰ Слоты: {SLOT_DURATION} минут, {MAX_PEOPLE_PER_SLOT} чел/слот")
     logger.info(f"📅 Слотов в день: {TOTAL_SLOTS_PER_DAY}")
     logger.info(f"🌍 Часовой пояс: Москва (UTC+3)")
-    logger.info("=" * 50)
-    logger.info("🚀 Бот запускается...")
     
-    # Запускаем бота
-    application.run_polling()
+    # Выбор режима запуска: веб-хуки или polling
+    if WEBHOOK_URL:
+        logger.info(f"🌐 Режим: ВЕБ-ХУКИ")
+        logger.info(f"🌐 Webhook URL: {WEBHOOK_URL}")
+        logger.info(f"🌐 Порт: {PORT}")
+        
+        # Запуск с веб-хуками
+        import asyncio
+        from aiohttp import web
+        
+        async def start_webhook():
+            # Настраиваем веб-хук
+            await application.bot.set_webhook(
+                url=f"{WEBHOOK_URL}/{TOKEN}",
+                drop_pending_updates=True
+            )
+            
+            # Создаем aiohttp приложение
+            app = web.Application()
+            
+            # Маршрут для веб-хука
+            app.router.add_post(f"/{TOKEN}", application.update_queue.put)
+            
+            # Маршрут для проверки здоровья
+            app.router.add_get("/health", health_check)
+            
+            # Запускаем сервер
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", PORT)
+            await site.start()
+            
+            logger.info("✅ Бот запущен в режиме веб-хуков")
+            logger.info(f"✅ Сервер слушает на порту {PORT}")
+            
+            # Бесконечный цикл
+            await asyncio.Event().wait()
+        
+        # Запускаем веб-хук
+        asyncio.run(start_webhook())
+        
+    else:
+        logger.info("🔁 Режим: POLLING (для локальной разработки)")
+        logger.info("=" * 50)
+        logger.info("🚀 Бот запускается...")
+        
+        # Запуск в режиме polling (для локальной разработки)
+        application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
