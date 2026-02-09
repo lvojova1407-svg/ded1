@@ -1,6 +1,7 @@
 import os
 import logging
 import sqlite3
+import ntplib
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -22,6 +23,9 @@ SLOT_DURATION = 15  # минут
 MAX_PEOPLE_PER_SLOT = 3
 TOTAL_SLOTS_PER_DAY = 96  # 24ч * 4 слота
 
+# NTP сервер для точного времени
+NTP_SERVERS = ['time.google.com', 'time.windows.com', 'pool.ntp.org']
+
 # Состояния для ConversationHandler
 WAITING_FOR_NAME = 1
 
@@ -31,6 +35,39 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ==================== ФУНКЦИИ ВРЕМЕНИ ====================
+def get_accurate_time():
+    """Получает точное время с NTP-сервера"""
+    try:
+        client = ntplib.NTPClient()
+        # Пробуем разные серверы
+        for server in NTP_SERVERS:
+            try:
+                response = client.request(server, timeout=2)
+                ntp_time = datetime.fromtimestamp(response.tx_time)
+                logger.info(f"✅ Время получено с NTP-сервера: {server}")
+                return ntp_time
+            except:
+                continue
+        
+        # Если не удалось получить время с NTP, используем локальное время
+        logger.warning("⚠️ Не удалось получить время с NTP-серверов, используется локальное время")
+        return datetime.now()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения времени: {e}")
+        return datetime.now()
+
+def get_current_time():
+    """Возвращает текущее время в формате HH:MM"""
+    try:
+        accurate_time = get_accurate_time()
+        return accurate_time.strftime('%H:%M'), accurate_time
+    except:
+        # Fallback на локальное время
+        now = datetime.now()
+        return now.strftime('%H:%M'), now
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -164,9 +201,8 @@ def get_user_fio(telegram_id):
     return result[0] if result else None
 
 def get_next_2_hours_slots():
-    """Возвращает слоты на ближайшие 2 часа"""
-    now = datetime.now()
-    current_time = now.strftime('%H:%M')
+    """Возвращает слоты на ближайшие 2 часа - с использованием точного времени"""
+    current_time_str, now = get_current_time()
     current_date = now.strftime('%Y-%m-%d')
     
     # Вычисляем время через 2 часа
@@ -194,11 +230,11 @@ def get_next_2_hours_slots():
     LIMIT 8
     '''
     
-    c.execute(query, (current_date, current_time))
+    c.execute(query, (current_date, current_time_str))
     slots = c.fetchall()
     conn.close()
     
-    return slots
+    return slots, current_time_str, end_time
 
 def get_all_today_bookings():
     """Возвращает все бронирования на сегодня"""
@@ -444,7 +480,7 @@ async def register_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню записи - ИСПРАВЛЕННЫЙ БАГ С ВРЕМЕНЕМ"""
+    """Показывает меню записи с ТОЧНЫМ временем"""
     user = update.effective_user
     
     # Проверяем регистрацию
@@ -456,26 +492,22 @@ async def show_book_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Получаем слоты на ближайшие 2 часа
-    slots = get_next_2_hours_slots()
+    # Получаем слоты и точное время
+    slots, current_time, two_hours_later = get_next_2_hours_slots()
     
     if not slots:
         await update.message.reply_text(
-            "⏰ На ближайшие 2 часов нет доступных слотов.\n"
+            f"⏰ На ближайшие 2 часа ({current_time} → {two_hours_later}) нет доступных слотов.\n"
             "Попробуйте позже или посмотрите все слоты.",
             reply_markup=get_main_keyboard()
         )
         return
     
-    now = datetime.now()
-    current_time = now.strftime('%H:%M')
-    two_hours_later = (now + timedelta(hours=2)).strftime('%H:%M')
-    
-    # Формируем сообщение с РЕАЛЬНЫМ временем
+    # Формируем сообщение с ТОЧНЫМ временем
     message = (
         f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-        f"Сейчас: {current_time}\n"
-        f"Показываем слоты: {current_time} → {two_hours_later} (2 часа)\n\n"
+        f"🕐 **Точное время:** {current_time}\n"
+        f"📅 **Показываем слоты:** {current_time} → {two_hours_later} (2 часа)\n\n"
         f"**Легенда:**\n"
         f"🟢 - свободно\n"
         f"🟡 - 1 место свободно\n"
@@ -500,7 +532,11 @@ async def show_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    message = "🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n\n"
+    # Получаем точное время для заголовка
+    current_time, _ = get_current_time()
+    
+    message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
+    message += f"🕐 **Текущее время:** {current_time}\n\n"
     
     for slot_time, max_people, booked_count, people_names in slots:
         if booked_count == 0:
@@ -564,7 +600,11 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    message = f"📋 **ВАШИ АКТИВНЫЕ ЗАПИСИ**\n\n"
+    # Получаем точное время
+    current_time, _ = get_current_time()
+    
+    message = f"📋 **ВАШИ АКТИВНЫЕ ЗАПИСИ**\n"
+    message += f"🕐 **Текущее время:** {current_time}\n\n"
     
     for i, (booking_id, slot_time, max_people, booked_count, other_users) in enumerate(bookings, 1):
         if booked_count >= max_people:
@@ -613,9 +653,13 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
     
-    # Упрощенная статистика - без "Самый популярный" и "Система"
+    # Получаем точное время
+    current_time, _ = get_current_time()
+    
+    # Упрощенная статистика
     message = (
-        f"📊 **СТАТИСТИКА НА СЕГОДНЯ**\n\n"
+        f"📊 **СТАТИСТИКА НА СЕГОДНЯ**\n"
+        f"🕐 **Текущее время:** {current_time}\n\n"
         f"👥 **Участников:** {active_users} человек\n"
         f"📅 **Всего слотов:** {total_slots}\n"
         f"✅ **Занято слотов:** {booked_slots}\n"
@@ -629,7 +673,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик inline-кнопок - ИСПРАВЛЕННЫЙ БАГ С ВРЕМЕНЕМ"""
+    """Обработчик inline-кнопок с ТОЧНЫМ временем"""
     query = update.callback_query
     await query.answer()
     
@@ -657,10 +701,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if success:
             slot_time, other_users = result
             
+            # Получаем точное время для сообщения
+            current_time, _ = get_current_time()
+            
             if other_users:
                 users_text = ", ".join(other_users)
                 message = (
-                    f"✅ **ВЫ ЗАПИСАЛИСЬ!**\n\n"
+                    f"✅ **ВЫ ЗАПИСАЛИСЬ!**\n"
+                    f"🕐 **Время записи:** {current_time}\n\n"
                     f"🎯 **Слот:** {slot_time}\n"
                     f"👤 **Ваше имя:** {user_fio}\n"
                     f"👥 **Вместе с вами:** {users_text}\n\n"
@@ -668,7 +716,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 message = (
-                    f"✅ **ВЫ ЗАПИСАЛИСЬ!**\n\n"
+                    f"✅ **ВЫ ЗАПИСАЛИСЬ!**\n"
+                    f"🕐 **Время записи:** {current_time}\n\n"
                     f"🎯 **Слот:** {slot_time}\n"
                     f"👤 **Ваше имя:** {user_fio}\n"
                     f"👥 **Пока вы единственный в этом слоте**\n\n"
@@ -691,18 +740,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Этот слот полностью занят!", show_alert=True)
     
     elif data == "refresh":
-        # Обновить список слотов - ИСПРАВЛЕННЫЙ БАГ С ВРЕМЕНЕМ
-        slots = get_next_2_hours_slots()
+        # Обновить список слотов с ТОЧНЫМ временем
+        slots, current_time, two_hours_later = get_next_2_hours_slots()
         
         if slots:
-            now = datetime.now()
-            current_time = now.strftime('%H:%M')
-            two_hours_later = (now + timedelta(hours=2)).strftime('%H:%M')
-            
             message = (
                 f"⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-                f"Сейчас: {current_time}\n"
-                f"Показываем слоты: {current_time} → {two_hours_later} (2 часа)\n\n"
+                f"🕐 **Точное время:** {current_time}\n"
+                f"📅 **Показываем слоты:** {current_time} → {two_hours_later} (2 часа)\n\n"
                 f"👇 Нажмите на слот для записи:"
             )
             
@@ -713,7 +758,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await query.edit_message_text(
-                "⏰ На ближайшие 2 часов нет доступных слотов.",
+                f"⏰ На ближайшие 2 часа ({current_time} → {two_hours_later}) нет доступных слотов.",
                 reply_markup=get_main_keyboard()
             )
     
@@ -732,7 +777,11 @@ async def show_all_bookings_for_button(query):
         )
         return
     
-    message = "🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n\n"
+    # Получаем точное время
+    current_time, _ = get_current_time()
+    
+    message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
+    message += f"🕐 **Текущее время:** {current_time}\n\n"
     
     for slot_time, max_people, booked_count, people_names in slots:
         if booked_count == 0:
