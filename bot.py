@@ -47,6 +47,18 @@ def get_current_time_str():
     """Возвращает текущее время как строку HH:MM в Московском часовом поясе"""
     return get_current_moscow_time().strftime('%H:%M')
 
+def get_current_time_for_sql():
+    """
+    Возвращает текущее время для SQL запроса.
+    Так как слоты хранятся в локальном времени, а сервер в UTC,
+    нужно преобразовать время обратно для сравнения в БД.
+    """
+    # Получаем московское время
+    moscow_time = get_current_moscow_time()
+    
+    # Преобразуем в строку для SQL
+    return moscow_time.strftime('%H:%M')
+
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
     """Инициализация базы данных"""
@@ -181,7 +193,8 @@ def get_user_fio(telegram_id):
 def get_next_2_hours_slots():
     """Возвращает слоты на ближайшие 2 часа"""
     now = get_current_moscow_time()
-    current_time = now.strftime('%H:%M')
+    current_time_display = now.strftime('%H:%M')  # Для отображения
+    current_time_sql = get_current_time_for_sql()  # Для SQL запроса
     current_date = now.strftime('%Y-%m-%d')
     
     # Вычисляем время через 2 часа
@@ -209,11 +222,12 @@ def get_next_2_hours_slots():
     LIMIT 8
     '''
     
-    c.execute(query, (current_date, current_time))
+    # Используем corrected_time для SQL запроса
+    c.execute(query, (current_date, current_time_sql))
     slots = c.fetchall()
     conn.close()
     
-    return slots, current_time, end_time
+    return slots, current_time_display, end_time
 
 def get_all_today_bookings():
     """Возвращает все бронирования на сегодня"""
