@@ -1,16 +1,3 @@
-# Фикс для отсутствующего imghdr в Python 3.13
-try:
-    import imghdr
-except ImportError:
-    import sys
-    
-    class ImghdrModule:
-        @staticmethod
-        def what(file, h=None):
-            return None
-    
-    sys.modules['imghdr'] = ImghdrModule()
-
 import os
 import logging
 import sqlite3
