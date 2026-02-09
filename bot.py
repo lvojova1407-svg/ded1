@@ -21,7 +21,6 @@ DB_NAME = 'breaks.db'
 # Render настройки
 PORT = int(os.environ.get('PORT', 8443))  # Порт для веб-сервера
 RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')  # Render использует эту переменную
-WEBHOOK_URL = RENDER_URL  # Для совместимости с остальным кодом
 
 # Настройки кронтинга
 PING_INTERVAL = 300  # Пинг каждые 5 минут (300 секунд)
@@ -64,7 +63,7 @@ async def ping_self():
         try:
             async with aiohttp.ClientSession() as session:
                 # Пингуем несколько эндпоинтов для надежности
-                endpoints = ['/', '/health', f'/{TOKEN}']
+                endpoints = ['/', '/health']
                 
                 for endpoint in endpoints:
                     try:
@@ -174,7 +173,6 @@ def adjust_time_for_sql(time_str):
     Преобразует время из московского в "базовое" для SQL сравнения.
     Слоты хранятся в локальном времени (уже московском).
     """
-    # Время уже в московском, просто возвращаем как есть
     return time_str
 
 # ==================== БАЗА ДАННЫХ ====================
@@ -1093,30 +1091,17 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# ==================== ВЕБ-ХУКИ И СЕРВЕР ====================
+# ==================== ВЕБ-СЕРВЕР ДЛЯ КРОНТИНГА ====================
 async def start_web_server():
-    """Запускает веб-сервер для веб-хуков и кронтинга"""
+    """Запускает веб-сервер для кронтинга"""
     from aiohttp import web
     
     # Создаем aiohttp приложение
     app = web.Application()
     
-    # Маршрут для веб-хука Telegram
-    async def telegram_webhook(request):
-        try:
-            data = await request.json()
-            # Здесь нужно добавить логику обработки веб-хука
-            # Пока просто возвращаем OK
-            logger.debug(f"Веб-хук получен: {data.keys() if data else 'нет данных'}")
-            return web.Response(text="OK")
-        except Exception as e:
-            logger.error(f"Ошибка обработки веб-хука: {e}")
-            return web.Response(text="ERROR", status=500)
-    
     # Регистрируем маршруты
     app.router.add_get("/", home_page)
     app.router.add_get("/health", health_check)
-    app.router.add_post(f"/{TOKEN}", telegram_webhook) if TOKEN else None
     
     # Запускаем сервер
     runner = web.AppRunner(app)
@@ -1124,7 +1109,7 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     
-    logger.info(f"✅ Веб-сервер запущен на порту {PORT}")
+    logger.info(f"✅ Веб-сервер для кронтинга запущен на порту {PORT}")
     logger.info(f"🌐 Доступен по адресу: {RENDER_URL or 'локально'}")
     
     return runner
@@ -1169,49 +1154,48 @@ def main():
     logger.info(f"📅 Слотов в день: {TOTAL_SLOTS_PER_DAY}")
     logger.info(f"🌍 Часовой пояс: Москва (UTC+3)")
     
-    # Выбор режима запуска: веб-хуки или polling
+    # Запускаем в режиме polling с кронтингом
     if RENDER_URL:
-        logger.info(f"🌐 Режим: ВЕБ-ХУКИ + КРОНТИНГ")
+        logger.info(f"🌐 Режим: POLLING + КРОНТИНГ (для Render)")
         logger.info(f"🌐 Render URL: {RENDER_URL}")
         logger.info(f"🌐 Порт: {PORT}")
         logger.info(f"🔄 Кронтинг каждые: {PING_INTERVAL//60} минут")
         
-        # Запуск с веб-хуками и кронтингом
-        import asyncio
+        # Запускаем веб-сервер для кронтинга в отдельном потоке
+        import threading
         
-        async def start_with_ping():
-            # Запускаем веб-сервер
-            runner = await start_web_server()
+        def run_web_server():
+            """Запускает веб-сервер в отдельном потоке"""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
-            # Настраиваем веб-хук Telegram
-            webhook_url = f"{RENDER_URL}/{TOKEN}"
-            logger.info(f"🌐 Устанавливаю веб-хук: {webhook_url}")
+            async def start_server():
+                runner = await start_web_server()
+                
+                # Запускаем кронтинг
+                ping_task = asyncio.create_task(ping_self())
+                
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    logger.info("🛑 Останавливаю веб-сервер...")
+                    await runner.cleanup()
+                    ping_task.cancel()
             
-            try:
-                await application.bot.set_webhook(
-                    url=webhook_url,
-                    drop_pending_updates=True
-                )
-                logger.info("✅ Веб-хук установлен")
-            except Exception as e:
-                logger.error(f"❌ Ошибка установки веб-хука: {e}")
-            
-            # Запускаем кронтинг в фоне
-            ping_task = asyncio.create_task(ping_self())
-            
-            logger.info("✅ Бот запущен в режиме веб-хуков с кронтингом")
-            logger.info("🚀 Ожидаю запросы...")
-            
-            # Бесконечный цикл
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                logger.info("🛑 Останавливаю бота...")
-                await runner.cleanup()
-                ping_task.cancel()
+            loop.run_until_complete(start_server())
         
-        # Запускаем веб-хук с кронтингом
-        asyncio.run(start_with_ping())
+        # Запускаем веб-сервер в отдельном потоке
+        web_thread = threading.Thread(target=run_web_server, daemon=True)
+        web_thread.start()
+        
+        # Даем время запуститься веб-серверу
+        import time
+        time.sleep(2)
+        
+        logger.info("🚀 Запускаю бота в режиме polling...")
+        
+        # Запускаем бота в основном потоке
+        application.run_polling(drop_pending_updates=True, close_loop=False)
         
     else:
         logger.info("🔁 Режим: POLLING (для локальной разработки)")
