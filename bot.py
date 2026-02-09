@@ -1,7 +1,7 @@
 import os
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, 
@@ -31,6 +31,21 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ==================== ФУНКЦИИ ВРЕМЕНИ (МОСКВА UTC+3) ====================
+def get_current_moscow_time():
+    """Возвращает текущее время в Московском часовом поясе (UTC+3)"""
+    utc_now = datetime.now(timezone.utc)
+    moscow_offset = timedelta(hours=3)
+    return utc_now + moscow_offset
+
+def get_today_date():
+    """Возвращает сегодняшнюю дату в Московском часовом поясе"""
+    return get_current_moscow_time().strftime('%Y-%m-%d')
+
+def get_current_time_str():
+    """Возвращает текущее время как строку HH:MM в Московском часовом поясе"""
+    return get_current_moscow_time().strftime('%H:%M')
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -64,7 +79,7 @@ def init_db():
                   FOREIGN KEY (slot_id) REFERENCES time_slots(id))''')
     
     # Создаем слоты на сегодня если их нет
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = get_today_date()
     generate_slots_for_date(today, conn)
     
     conn.commit()
@@ -165,7 +180,7 @@ def get_user_fio(telegram_id):
 
 def get_next_2_hours_slots():
     """Возвращает слоты на ближайшие 2 часа"""
-    now = datetime.now()
+    now = get_current_moscow_time()
     current_time = now.strftime('%H:%M')
     current_date = now.strftime('%Y-%m-%d')
     
@@ -202,7 +217,7 @@ def get_next_2_hours_slots():
 
 def get_all_today_bookings():
     """Возвращает все бронирования на сегодня"""
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = get_today_date()
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -541,7 +556,7 @@ async def show_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Получаем время для заголовка
-    current_time = datetime.now().strftime('%H:%M')
+    current_time = get_current_time_str()
     
     message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
     message += f"🕐 **Текущее время:** {current_time}\n\n"
@@ -609,7 +624,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Получаем время
-    current_time = datetime.now().strftime('%H:%M')
+    current_time = get_current_time_str()
     
     message = f"📋 **ВАШИ АКТИВНЫЕ ЗАПИСИ**\n"
     message += f"🕐 **Текущее время:** {current_time}\n\n"
@@ -640,7 +655,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает статистику"""
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = get_today_date()
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -660,7 +675,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     # Получаем время
-    current_time = datetime.now().strftime('%H:%M')
+    current_time = get_current_time_str()
     
     # Статистика
     message = (
@@ -708,7 +723,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             slot_time, other_users = result
             
             # Получаем время для сообщения
-            current_time = datetime.now().strftime('%H:%M')
+            current_time = get_current_time_str()
             
             if other_users:
                 users_text = ", ".join(other_users)
@@ -751,7 +766,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             slot_time, user_name = result
             
             # Получаем время для сообщения
-            current_time = datetime.now().strftime('%H:%M')
+            current_time = get_current_time_str()
             
             message = (
                 f"🗑️ **ЗАПИСЬ ОТМЕНЕНА!**\n"
@@ -857,7 +872,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        current_time = datetime.now().strftime('%H:%M')
+        current_time = get_current_time_str()
         
         message = f"🏢 **ВСЕ БРОНИРОВАНИЯ: СЕГОДНЯ**\n"
         message += f"🕐 **Текущее время:** {current_time}\n\n"
@@ -966,6 +981,7 @@ def main():
     logger.info(f"✅ Токен: {'Найден' if TOKEN else 'НЕ НАЙДЕН!'}")
     logger.info(f"⏰ Слоты: {SLOT_DURATION} минут, {MAX_PEOPLE_PER_SLOT} чел/слот")
     logger.info(f"📅 Слотов в день: {TOTAL_SLOTS_PER_DAY}")
+    logger.info(f"🌍 Часовой пояс: Москва (UTC+3)")
     logger.info("=" * 50)
     logger.info("🚀 Бот запускается...")
     
