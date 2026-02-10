@@ -13,6 +13,9 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+if not TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
+
 DB_NAME = 'breaks.db'
 RENDER_APP_NAME = os.environ.get('RENDER_APP_NAME', '')
 RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
@@ -200,99 +203,6 @@ def cancel_booking(booking_id, telegram_id):
         return False, "Ошибка при отмене записи"
     finally:
         conn.close()
-
-# ==================== СИСТЕМА АВТО-ПИНГА ====================
-class KeepAliveSystem:
-    """Система автоматического поддержания активности сервера"""
-    
-    def __init__(self):
-        self.ping_count = 0
-        self.last_ping_time = None
-        self.is_running = False
-        self.ping_thread = None
-        
-    def start(self):
-        """Запускает систему авто-пинга"""
-        if self.is_running:
-            return
-            
-        self.is_running = True
-        self.ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
-        self.ping_thread.start()
-        logger.info("🚀 Система авто-пинга запущена")
-        
-    def stop(self):
-        """Останавливает систему авто-пинга"""
-        self.is_running = False
-        if self.ping_thread:
-            self.ping_thread.join(timeout=5)
-        logger.info("🛑 Система авто-пинга остановлена")
-        
-    def _ping_loop(self):
-        """Основной цикл пинга"""
-        while self.is_running:
-            try:
-                self._perform_ping()
-                self.ping_count += 1
-                self.last_ping_time = datetime.now(timezone.utc)
-                
-                # Логируем каждые 10 пингов
-                if self.ping_count % 10 == 0:
-                    logger.info(f"🔁 Авто-пинг #{self.ping_count} выполнен")
-                
-                # Ждем 8 минут (меньше чем 15 минут сна Render)
-                time_to_sleep = 480  # 8 минут в секундах
-                
-                # Если есть внешний URL, пингуем его тоже
-                if RENDER_EXTERNAL_URL:
-                    try:
-                        response = requests.get(f"{RENDER_EXTERNAL_URL}/health", timeout=10)
-                        if response.status_code == 200:
-                            logger.debug("✅ Внешний пинг успешен")
-                    except:
-                        pass
-                
-                # Спим
-                for _ in range(time_to_sleep):
-                    if not self.is_running:
-                        break
-                    time.sleep(1)
-                    
-            except Exception as e:
-                logger.error(f"❌ Ошибка в системе авто-пинга: {e}")
-                time.sleep(60)  # Ждем минуту при ошибке
-    
-    def _perform_ping(self):
-        """Выполняет пинг сервера"""
-        try:
-            # Пингуем сами себя через localhost
-            response = requests.get("http://localhost:8000/health", timeout=5)
-            
-            if response.status_code == 200:
-                logger.debug("✅ Авто-пинг выполнен успешно")
-                return True
-            else:
-                logger.warning(f"⚠️ Авто-пинг: статус {response.status_code}")
-                return False
-                
-        except requests.exceptions.ConnectionError:
-            # Сервер может быть в процессе запуска
-            logger.debug("⏳ Сервер не отвечает, возможно в процессе запуска")
-            return False
-        except Exception as e:
-            logger.error(f"❌ Ошибка при авто-пинге: {e}")
-            return False
-    
-    def get_status(self):
-        """Возвращает статус системы"""
-        return {
-            "is_running": self.is_running,
-            "ping_count": self.ping_count,
-            "last_ping_time": self.last_ping_time.isoformat() if self.last_ping_time else None
-        }
-
-# Глобальная система авто-пинга
-keep_alive_system = KeepAliveSystem()
 
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -745,56 +655,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== FASTAPI СЕРВЕР ====================
 app = FastAPI(title="Telegram Bot Server", version="1.0.0")
 
-# Глобальные переменные для управления потоками
-bot_thread = None
-uvicorn_server = None
-application = None
+# Глобальная переменная для бота
+bot_application = None
 
-def run_fastapi():
-    """Запускает FastAPI сервер в отдельном потоке"""
-    import uvicorn
-    global uvicorn_server
+@app.on_event("startup")
+async def startup_event():
+    """Запускаем Telegram бота при старте сервера"""
+    global bot_application
     
-    # Получаем порт из переменных окружения (для Render)
-    port = int(os.environ.get("PORT", 8000))
-    host = os.environ.get("HOST", "0.0.0.0")
-    
-    logger.info(f"🌐 Запуск FastAPI сервера на {host}:{port}")
-    
-    config = uvicorn.Config(
-        app, 
-        host=host, 
-        port=port,
-        timeout_keep_alive=30,
-        access_log=True,
-        # Отключаем сигналы для работы в потоке
-        log_config=None
-    )
-    
-    uvicorn_server = uvicorn.Server(config)
-    uvicorn_server.run()
-
-async def run_bot():
-    """Запускает Telegram бота в основном потоке"""
-    global application
+    logger.info("🚀 Запускаем Telegram бота...")
     
     # Инициализация базы данных
     init_db()
     
-    # Проверка токена
-    if not TOKEN:
-        logger.error("❌ ОШИБКА: Токен не найден!")
-        logger.error("ℹ️ Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
-        return
-    
     try:
         # Создание приложения бота
-        application = Application.builder().token(TOKEN).build()
+        bot_application = Application.builder().token(TOKEN).build()
         
         # Добавление обработчиков
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CallbackQueryHandler(button_handler))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        bot_application.add_handler(CommandHandler("start", start))
+        bot_application.add_handler(CallbackQueryHandler(button_handler))
+        bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         # Логирование информации о запуске
         logger.info("=" * 50)
@@ -804,58 +685,81 @@ async def run_bot():
         logger.info(f"🌐 Часовой пояс: Москва (UTC+3)")
         logger.info(f"⏰ Текущее время по Москве: {format_moscow_time()}")
         logger.info("=" * 50)
-        logger.info("🚀 Бот запускается...")
         
-        # Запуск системы авто-пинга
-        keep_alive_system.start()
-        
-        # Запуск бота в режиме polling (БЕЗ stop_signals)
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling(
+        # Запускаем бота в фоновом режиме (без блокировки)
+        await bot_application.initialize()
+        await bot_application.start()
+        await bot_application.updater.start_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
         )
         
-        # Бот работает вечно
-        await asyncio.Event().wait()
+        logger.info("✅ Telegram бот успешно запущен!")
+        
+        # Запускаем систему авто-пинга в отдельном потоке
+        keep_alive_thread = threading.Thread(target=keep_alive_system, daemon=True)
+        keep_alive_thread.start()
         
     except Exception as e:
-        logger.error(f"💥 Критическая ошибка в боте: {e}")
+        logger.error(f"💥 Ошибка при запуске бота: {e}")
         raise
-    finally:
-        if application:
-            await application.stop()
-            await application.shutdown()
 
-# FastAPI endpoints
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Останавливаем бота при завершении"""
+    global bot_application
+    
+    if bot_application:
+        logger.info("🛑 Останавливаем Telegram бота...")
+        await bot_application.stop()
+        await bot_application.shutdown()
+        logger.info("✅ Telegram бот остановлен")
+
+def keep_alive_system():
+    """Система поддержания активности сервера"""
+    import time
+    
+    logger.info("🔧 Система авто-пинга запущена (пинг каждые 10 минут)")
+    
+    while True:
+        try:
+            # Пингуем сами себя
+            response = requests.get("http://localhost:10000/health", timeout=5)
+            if response.status_code == 200:
+                logger.debug("✅ Авто-пинг выполнен успешно")
+            else:
+                logger.warning(f"⚠️ Авто-пинг: статус {response.status_code}")
+        except Exception as e:
+            logger.debug(f"⏳ Авто-пинг: {e}")
+        
+        # Ждем 10 минут
+        time.sleep(600)
+
 @app.get("/")
 async def root():
     """Корневой endpoint"""
+    bot_status = "running" if bot_application else "stopped"
+    
     return {
         "message": "Telegram Bot Server is running",
-        "bot_status": "running" if application else "stopped",
+        "bot_status": bot_status,
         "time_moscow": format_moscow_time(),
-        "keep_alive": keep_alive_system.get_status(),
         "docs": "/docs",
-        "health": "/health",
-        "ping": "/ping"
+        "health": "/health"
     }
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint для мониторинга"""
-    bot_status = "running" if application else "stopped"
+    bot_status = "running" if bot_application else "stopped"
     
     return JSONResponse(
         content={
             "status": "healthy",
             "bot_running": bot_status,
-            "keep_alive": keep_alive_system.get_status(),
             "service": "telegram-bot-server",
             "time_moscow": format_moscow_time(),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "render_app": RENDER_APP_NAME
+            "timestamp": datetime.now(timezone.utc).isoformat()
         },
         status_code=200
     )
@@ -863,46 +767,34 @@ async def health_check():
 @app.get("/ping")
 async def ping():
     """Эндпоинт для ручного пинга"""
-    keep_alive_system._perform_ping()
     return {
-        "message": "Ping executed",
-        "time": datetime.now(timezone.utc).isoformat()
+        "message": "Ping received",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "bot_status": "running" if bot_application else "stopped"
     }
 
 @app.get("/bot-status")
 async def bot_status():
     """Проверка статуса бота"""
-    bot_alive = application is not None
-    
-    return {
-        "status": "running" if bot_alive else "stopped", 
-        "message": "Бот активен" if bot_alive else "Бот не запущен",
-        "keep_alive": keep_alive_system.get_status()
-    }
+    if bot_application:
+        return {
+            "status": "running", 
+            "message": "Бот активен и работает",
+            "time_moscow": format_moscow_time()
+        }
+    else:
+        return {
+            "status": "stopped", 
+            "message": "Бот не запущен",
+            "time_moscow": format_moscow_time()
+        }
 
-# Основная функция запуска
-async def main():
-    """Основная функция для запуска всего приложения"""
-    
-    # Запускаем FastAPI сервер в отдельном потоке
-    fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
-    fastapi_thread.start()
-    
-    logger.info("⏳ Ожидаем запуск FastAPI сервера...")
-    time.sleep(3)  # Даем время серверу запуститься
-    
-    # Запускаем Telegram бота в основном потоке
-    await run_bot()
-
+# Запуск приложения (для локального тестирования)
 if __name__ == "__main__":
-    # Запускаем основное приложение
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("🛑 Приложение остановлено пользователем")
-    except Exception as e:
-        logger.error(f"💥 Критическая ошибка: {e}")
-        # Пытаемся перезапуститься через 30 секунд
-        logger.info("🔄 Перезапуск через 30 секунд...")
-        time.sleep(30)
-        asyncio.run(main())
+    import uvicorn
+    
+    # Для локального запуска
+    port = int(os.environ.get("PORT", 8000))
+    host = os.environ.get("HOST", "0.0.0.0")
+    
+    uvicorn.run(app, host=host, port=port)
