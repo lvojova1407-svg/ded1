@@ -17,8 +17,9 @@ if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
 DB_NAME = 'breaks.db'
-RENDER_APP_NAME = os.environ.get('RENDER_APP_NAME', '')
-RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
+
+# ПОРТ ДЛЯ RENDER - берем из переменной окружения
+PORT = int(os.environ.get("PORT", 8000))
 
 # Московское время (UTC+3)
 MOSCOW_OFFSET = timedelta(hours=3)
@@ -702,7 +703,8 @@ async def startup_event():
         
     except Exception as e:
         logger.error(f"💥 Ошибка при запуске бота: {e}")
-        raise
+        # Не падаем полностью, чтобы веб-сервер продолжал работать
+        logger.warning("⚠️ Telegram бот не запущен, но веб-сервер работает")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -711,20 +713,24 @@ async def shutdown_event():
     
     if bot_application:
         logger.info("🛑 Останавливаем Telegram бота...")
-        await bot_application.stop()
-        await bot_application.shutdown()
-        logger.info("✅ Telegram бот остановлен")
+        try:
+            await bot_application.stop()
+            await bot_application.shutdown()
+            logger.info("✅ Telegram бот остановлен")
+        except Exception as e:
+            logger.error(f"Ошибка при остановке бота: {e}")
 
 def keep_alive_system():
     """Система поддержания активности сервера"""
     import time
     
-    logger.info("🔧 Система авто-пинга запущена (пинг каждые 10 минут)")
+    logger.info(f"🔧 Система авто-пинга запущена (пинг каждые 10 минут на порту {PORT})")
     
     while True:
         try:
-            # Пингуем сами себя
-            response = requests.get("http://localhost:10000/health", timeout=5)
+            # Пингуем сами себя на правильном порту
+            url = f"http://localhost:{PORT}/health"
+            response = requests.get(url, timeout=5)
             if response.status_code == 200:
                 logger.debug("✅ Авто-пинг выполнен успешно")
             else:
@@ -744,6 +750,7 @@ async def root():
         "message": "Telegram Bot Server is running",
         "bot_status": bot_status,
         "time_moscow": format_moscow_time(),
+        "port": PORT,
         "docs": "/docs",
         "health": "/health"
     }
@@ -759,6 +766,7 @@ async def health_check():
             "bot_running": bot_status,
             "service": "telegram-bot-server",
             "time_moscow": format_moscow_time(),
+            "port": PORT,
             "timestamp": datetime.now(timezone.utc).isoformat()
         },
         status_code=200
@@ -770,7 +778,8 @@ async def ping():
     return {
         "message": "Ping received",
         "time": datetime.now(timezone.utc).isoformat(),
-        "bot_status": "running" if bot_application else "stopped"
+        "bot_status": "running" if bot_application else "stopped",
+        "port": PORT
     }
 
 @app.get("/bot-status")
@@ -780,21 +789,27 @@ async def bot_status():
         return {
             "status": "running", 
             "message": "Бот активен и работает",
-            "time_moscow": format_moscow_time()
+            "time_moscow": format_moscow_time(),
+            "port": PORT
         }
     else:
         return {
             "status": "stopped", 
             "message": "Бот не запущен",
-            "time_moscow": format_moscow_time()
+            "time_moscow": format_moscow_time(),
+            "port": PORT
         }
 
-# Запуск приложения (для локального тестирования)
+# Запуск приложения
 if __name__ == "__main__":
     import uvicorn
     
-    # Для локального запуска
-    port = int(os.environ.get("PORT", 8000))
-    host = os.environ.get("HOST", "0.0.0.0")
+    logger.info(f"🌐 Запуск сервера на порту {PORT}")
     
-    uvicorn.run(app, host=host, port=port)
+    # Запускаем uvicorn с указанием порта
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=PORT,
+        log_level="info"
+    )
