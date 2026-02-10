@@ -7,6 +7,8 @@ services:
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-    healthCheckPath: /
+      - key: PORT          # ← Добавьте эту секцию
+        value: "10000"     # ← Значение порта
+    healthCheckPath: /health
     autoDeploy: true
     plan: free
