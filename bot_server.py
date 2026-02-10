@@ -1,28 +1,36 @@
-# bot_server.py
+# bot_server.py - объединенная версия
 import os
 import logging
+import sqlite3
+import asyncio
 import threading
+from datetime import datetime, timezone, timedelta
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Импортируем функцию запуска бота из вашего файла
-# Если бот находится в том же файле, используйте import
-from bot import run_bot  # Или ваш_файл_бота import run_bot
+# ==================== НАСТРОЙКИ ====================
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+DB_NAME = 'breaks.db'
 
-# Настройка логгирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ... ВСЯ ЛОГИКА ВАШЕГО БОТА ИЗ bot.py ...
 
-# Создаем FastAPI приложение
+# ==================== FASTAPI СЕРВЕР ====================
 app = FastAPI(title="Telegram Bot Server", version="1.0.0")
 
-# Флаг для отслеживания запуска бота
 bot_started = False
 bot_thread = None
 
+def run_bot():
+    """Функция для запуска бота в отдельном потоке"""
+    # Устанавливаем новый event loop для этого потока
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # ... ВАША ЛОГИКА ЗАПУСКА БОТА ...
+    
 @app.on_event("startup")
 async def startup_event():
     """Запускаем бота при старте сервера"""
@@ -31,7 +39,6 @@ async def startup_event():
     if not bot_started:
         logger.info("🚀 Запускаем Telegram бота в фоновом режиме...")
         
-        # Запускаем бота в отдельном потоке
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
         
@@ -40,33 +47,14 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    """Корневой endpoint"""
-    return {
-        "message": "Telegram Bot Server is running",
-        "bot_status": "running" if bot_started else "stopped",
-        "docs": "/docs",
-        "health": "/health"
-    }
+    return {"message": "Telegram Bot Server is running"}
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint для мониторинга"""
     return JSONResponse(
-        content={
-            "status": "healthy",
-            "bot_running": bot_started,
-            "service": "telegram-bot-server"
-        },
+        content={"status": "healthy", "bot_running": bot_started},
         status_code=200
     )
-
-@app.get("/bot-status")
-async def bot_status():
-    """Проверка статуса бота"""
-    if bot_started and bot_thread and bot_thread.is_alive():
-        return {"status": "running", "message": "Бот активен"}
-    else:
-        return {"status": "stopped", "message": "Бот не запущен"}
 
 if __name__ == "__main__":
     import uvicorn
