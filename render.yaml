@@ -3,12 +3,12 @@ services:
     name: telegram-break-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: gunicorn bot_server:app --bind 0.0.0.0:$PORT --timeout 300
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: PORT          # ← Добавьте эту секцию
-        value: "10000"     # ← Значение порта
+      - key: PORT
+        value: "10000"
     healthCheckPath: /health
     autoDeploy: true
     plan: free
