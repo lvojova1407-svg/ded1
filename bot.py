@@ -1,8 +1,7 @@
 import os
 import logging
 import sqlite3
-from datetime import datetime
-import pytz
+from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -10,8 +9,18 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 DB_NAME = 'breaks.db'
 
-# Часовой пояс Москвы
-MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+# Московское время (UTC+3)
+MOSCOW_OFFSET = timedelta(hours=3)
+
+def get_moscow_time():
+    """Возвращает текущее время по Москве"""
+    utc_now = datetime.now(timezone.utc)
+    moscow_time = utc_now + MOSCOW_OFFSET
+    return moscow_time
+
+def format_moscow_time():
+    """Возвращает форматированное время по Москве"""
+    return get_moscow_time().strftime('%H:%M')
 
 # Настройка логирования
 logging.basicConfig(
@@ -19,15 +28,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
-def get_moscow_time():
-    """Возвращает текущее время по Москве"""
-    return datetime.now(MOSCOW_TZ)
-
-def format_moscow_time():
-    """Возвращает форматированное время по Москве"""
-    return get_moscow_time().strftime('%H:%M')
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -143,6 +143,56 @@ def book_slot(user_id, slot_id):
     finally:
         conn.close()
 
+def get_user_bookings(telegram_id):
+    """Получает все бронирования пользователя"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    c.execute('''SELECT b.booking_id, s.time_range, s.slot_id
+                 FROM bookings b
+                 JOIN slots s ON b.slot_id = s.slot_id
+                 JOIN users u ON b.user_id = u.user_id
+                 WHERE u.telegram_id = ?
+                 ORDER BY s.time_range''', (telegram_id,))
+    
+    bookings = c.fetchall()
+    conn.close()
+    return bookings
+
+def cancel_booking(booking_id, telegram_id):
+    """Отменяет бронирование пользователя"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    try:
+        # Проверяем, что запись принадлежит пользователю
+        c.execute('''SELECT u.telegram_id, s.time_range 
+                     FROM bookings b
+                     JOIN users u ON b.user_id = u.user_id
+                     JOIN slots s ON b.slot_id = s.slot_id
+                     WHERE b.booking_id = ?''', (booking_id,))
+        
+        result = c.fetchone()
+        
+        if not result:
+            return False, "Запись не найдена"
+        
+        owner_telegram_id, time_range = result
+        
+        if owner_telegram_id != telegram_id:
+            return False, "Вы можете отменять только свои записи"
+        
+        # Удаляем запись
+        c.execute('''DELETE FROM bookings WHERE booking_id = ?''', (booking_id,))
+        conn.commit()
+        
+        return True, f"Запись на {time_range} отменена"
+    except Exception as e:
+        logger.error(f"Ошибка отмены бронирования: {e}")
+        return False, "Ошибка при отмене записи"
+    finally:
+        conn.close()
+
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -196,7 +246,6 @@ async def handle_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # ИСПРАВЛЕННАЯ СТРОКА - московское время
     moscow_time_now = format_moscow_time()
     
     await update.message.reply_text(
@@ -211,6 +260,40 @@ async def handle_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown',
         reply_markup=reply_markup
     )
+
+async def handle_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    bookings = get_user_bookings(user.id)
+    
+    if not bookings:
+        await update.message.reply_text(
+            "📭 *У вас пока нет активных записей.*\n\n"
+            "Нажмите '📅 ЗАПИСАТЬСЯ' чтобы выбрать время для перерыва.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Создаем клавиатуру с кнопками отмены
+    keyboard = []
+    
+    for booking_id, time_range, slot_id in bookings:
+        button_text = f"❌ Отменить {time_range}"
+        callback_data = f"cancel_{booking_id}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+    
+    # Кнопка возврата в меню
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data="back_to_menu")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    response = "📋 *Ваши активные записи:*\n\n"
+    for i, (booking_id, time_range, slot_id) in enumerate(bookings, 1):
+        response += f"{i}. 🕐 {time_range}\n"
+    
+    response += f"\n📊 *Всего записей:* {len(bookings)}\n\n👇 *Нажмите на запись для отмены:*"
+    
+    await update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -231,16 +314,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             time_range = c.fetchone()[0]
             conn.close()
             
+            # Создаем клавиатуру с действиями после бронирования
+            keyboard = [
+                [InlineKeyboardButton("📋 Мои записи", callback_data="my_bookings")],
+                [InlineKeyboardButton("📅 Записаться еще", callback_data="book_more")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await query.edit_message_text(
-                text=f"*Вы успешно записались!*\n\n"
-                     f"*Время:* {time_range}\n"
-                     f"*Имя:* {user.first_name or 'Пользователь'}\n\n"
-                     "Вы можете посмотреть свои записи кнопкой 'МОИ ЗАПИСИ'",
-                parse_mode='Markdown'
+                text=f"✅ *Вы успешно записались!*\n\n"
+                     f"🎯 *Время:* {time_range}\n"
+                     f"👤 *Имя:* {user.first_name or 'Пользователь'}\n\n"
+                     "Вы можете посмотреть свои записи или записаться еще раз:",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
             )
         else:
             await query.edit_message_text(
-                text="*Этот слот уже занят!*\n\nПожалуйста, выберите другое время.",
+                text="❌ *Этот слот уже занят!*\n\nПожалуйста, выберите другое время.",
                 parse_mode='Markdown'
             )
     
@@ -275,49 +366,176 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         moscow_time_now = format_moscow_time()
         
         await query.edit_message_text(
-            text=f"*Слоты обновлены*\n\n"
-                 f"*Текущее время (Москва):* {moscow_time_now}\n\n"
+            text=f"🔄 *Слоты обновлены*\n\n"
+                 f"🕐 *Текущее время (Москва):* {moscow_time_now}\n\n"
                  "Выберите удобное время:",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
-
-async def handle_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
     
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
+    elif data.startswith("cancel_"):
+        # Отмена записи
+        booking_id = int(data.split("_")[1])
+        
+        success, message = cancel_booking(booking_id, user.id)
+        
+        if success:
+            # Показываем кнопки после отмены
+            keyboard = [
+                [InlineKeyboardButton("📋 Мои записи", callback_data="my_bookings")],
+                [InlineKeyboardButton("📅 Записаться снова", callback_data="book_more")],
+                [InlineKeyboardButton("⬅️ Назад в меню", callback_data="back_to_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=f"✅ *Запись отменена!*\n\n"
+                     f"🗑️ {message}\n\n"
+                     "Что вы хотите сделать дальше?",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            await query.edit_message_text(
+                text=f"❌ *Ошибка отмены:*\n\n{message}",
+                parse_mode='Markdown'
+            )
     
-    c.execute('''SELECT user_id FROM users WHERE telegram_id = ?''', (user.id,))
-    result = c.fetchone()
+    elif data == "my_bookings":
+        # Показать записи пользователя
+        bookings = get_user_bookings(user.id)
+        
+        if not bookings:
+            keyboard = [
+                [InlineKeyboardButton("📅 Записаться", callback_data="book_more")],
+                [InlineKeyboardButton("⬅️ Назад в меню", callback_data="back_to_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text="📭 *У вас пока нет активных записей.*\n\n"
+                     "Хотите записаться на перерыв?",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            keyboard = []
+            
+            for booking_id, time_range, slot_id in bookings:
+                button_text = f"❌ Отменить {time_range}"
+                callback_data = f"cancel_{booking_id}"
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+            
+            keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_from_bookings")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            response = "📋 *Ваши активные записи:*\n\n"
+            for i, (booking_id, time_range, slot_id) in enumerate(bookings, 1):
+                response += f"{i}. 🕐 {time_range}\n"
+            
+            response += f"\n📊 *Всего записей:* {len(bookings)}\n\n👇 *Нажмите на запись для отмены:*"
+            
+            await query.edit_message_text(
+                text=response,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
     
-    if not result:
-        await update.message.reply_text("У вас пока нет записей.")
-        conn.close()
-        return
+    elif data == "book_more":
+        # Вернуться к выбору слотов
+        slots = get_available_slots()
+        
+        keyboard = []
+        row = []
+        
+        for i, slot in enumerate(slots):
+            slot_id, time_range, booked_count, max_people = slot
+            
+            if booked_count == 0:
+                status = "🟢"
+            elif booked_count < max_people:
+                status = "🟡"
+            else:
+                status = "🔴"
+            
+            button_text = f"{time_range} {status}"
+            callback_data = f"book_{slot_id}"
+            
+            row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
+            
+            if len(row) == 2 or i == len(slots) - 1:
+                keyboard.append(row)
+                row = []
+        
+        keyboard.append([InlineKeyboardButton("🔄 Обновить слоты", callback_data="refresh_slots")])
+        keyboard.append([InlineKeyboardButton("📋 Мои записи", callback_data="my_bookings")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        moscow_time_now = format_moscow_time()
+        
+        await query.edit_message_text(
+            text=f"📅 *Выбор времени для перерыва*\n\n"
+                 f"🕐 *Текущее время (Москва):* {moscow_time_now}\n\n"
+                 "👇 Выберите удобное время:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
     
-    user_id = result[0]
+    elif data == "back_from_bookings":
+        # Вернуться к выбору слотов из списка записей
+        slots = get_available_slots()
+        
+        keyboard = []
+        row = []
+        
+        for i, slot in enumerate(slots):
+            slot_id, time_range, booked_count, max_people = slot
+            
+            if booked_count == 0:
+                status = "🟢"
+            elif booked_count < max_people:
+                status = "🟡"
+            else:
+                status = "🔴"
+            
+            button_text = f"{time_range} {status}"
+            callback_data = f"book_{slot_id}"
+            
+            row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
+            
+            if len(row) == 2 or i == len(slots) - 1:
+                keyboard.append(row)
+                row = []
+        
+        keyboard.append([InlineKeyboardButton("🔄 Обновить слоты", callback_data="refresh_slots")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        moscow_time_now = format_moscow_time()
+        
+        await query.edit_message_text(
+            text=f"📅 *Выбор времени для перерыва*\n\n"
+                 f"🕐 *Текущее время (Москва):* {moscow_time_now}\n\n"
+                 "👇 Выберите удобное время:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
     
-    c.execute('''SELECT s.time_range, b.created_at
-                 FROM bookings b
-                 JOIN slots s ON b.slot_id = s.slot_id
-                 WHERE b.user_id = ?
-                 ORDER BY s.time_range''', (user_id,))
-    
-    bookings = c.fetchall()
-    conn.close()
-    
-    if not bookings:
-        await update.message.reply_text("У вас пока нет записей.")
-        return
-    
-    response = "*Ваши записи на перерывы:*\n\n"
-    for i, (time_range, created_at) in enumerate(bookings, 1):
-        response += f"{i}. {time_range}\n"
-    
-    response += f"\nВсего записей: {len(bookings)}"
-    
-    await update.message.reply_text(response, parse_mode='Markdown')
+    elif data == "back_to_menu":
+        # Возврат в главное меню
+        keyboard = [
+            [KeyboardButton("📅 ЗАПИСАТЬСЯ"), KeyboardButton("👤 МОИ ЗАПИСИ")],
+            [KeyboardButton("🏢 ВСЕ БРОНИРОВАНИЯ"), KeyboardButton("📊 СТАТИСТИКА")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        await query.message.reply_text(
+            "Главное меню:",
+            reply_markup=reply_markup
+        )
+        await query.delete_message()
 
 async def handle_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_NAME)
@@ -342,10 +560,10 @@ async def handle_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE
     conn.close()
     
     if not slots:
-        await update.message.reply_text("На ближайшее время нет бронирований.")
+        await update.message.reply_text("🏢 На ближайшее время нет бронирований.")
         return
     
-    response = "*Бронирования на ближайшее время:*\n\n"
+    response = "🏢 *Бронирования на ближайшее время:*\n\n"
     
     for time_range, booked, max_people, users in slots:
         if booked == 0:
@@ -374,21 +592,35 @@ async def handle_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute('''SELECT COUNT(*) FROM bookings''')
     total_bookings = c.fetchone()[0]
     
+    # Активные бронирования на сегодня
     current_date = get_moscow_time().strftime('%Y-%m-%d')
     c.execute('''SELECT COUNT(*) FROM bookings 
                  WHERE DATE(created_at) = ?''', (current_date,))
     today_bookings = c.fetchone()[0]
     
+    # Самый популярный слот
+    c.execute('''SELECT s.time_range, COUNT(b.booking_id) as booking_count
+                 FROM bookings b
+                 JOIN slots s ON b.slot_id = s.slot_id
+                 GROUP BY s.slot_id
+                 ORDER BY booking_count DESC
+                 LIMIT 1''')
+    popular_slot = c.fetchone()
+    
     conn.close()
     
     response = (
-        "*Статистика системы:*\n\n"
-        f"Зарегистрировано пользователей: {total_users}\n"
-        f"Всего временных слотов: {total_slots}\n"
-        f"Всего бронирований: {total_bookings}\n"
-        f"Бронирований сегодня: {today_bookings}\n"
-        f"Свободных слотов: {total_slots - total_bookings}"
+        "📊 *Статистика системы*\n\n"
+        f"👥 *Участников в системе:* {total_users} человек\n"
+        f"📅 *Всего временных слотов:* {total_slots}\n"
+        f"✅ *Всего бронирований:* {total_bookings}\n"
+        f"📈 *Бронирований сегодня:* {today_bookings}\n"
+        f"🎯 *Свободных слотов:* {total_slots - total_bookings}\n"
     )
+    
+    if popular_slot and popular_slot[1] > 0:
+        time_range, booking_count = popular_slot
+        response += f"🔥 *Самый популярный слот:* {time_range} ({booking_count} записей)\n"
     
     await update.message.reply_text(response, parse_mode='Markdown')
 
@@ -429,7 +661,7 @@ def main():
         logger.info("БОТ ДЛЯ ЗАПИСИ НА ПЕРЕРЫВЫ")
         logger.info("=" * 50)
         logger.info(f"Токен: {'Найден' if TOKEN else 'НЕ НАЙДЕН!'}")
-        logger.info(f"Часовой пояс: Europe/Moscow")
+        logger.info(f"Часовой пояс: Москва (UTC+3)")
         logger.info(f"Текущее время по Москве: {format_moscow_time()}")
         logger.info("=" * 50)
         logger.info("Бот запускается...")
