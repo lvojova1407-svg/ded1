@@ -694,3 +694,53 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# bot.py (в конце файла)
+def run_bot():
+    """Функция для запуска бота в отдельном потоке"""
+    # ... весь ваш код из функции run_bot() ...
+    
+    # Инициализация базы данных
+    init_db()
+    
+    # Проверка токена
+    if not TOKEN:
+        logger.error("❌ ОШИБКА: Токен не найден!")
+        logger.error("ℹ️ Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
+        return
+    
+    try:
+        # Создание приложения бота
+        application = Application.builder().token(TOKEN).build()
+        
+        # Добавление обработчиков
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Логирование информации о запуске
+        logger.info("=" * 50)
+        logger.info("🤖 БОТ ДЛЯ ЗАПИСИ НА ПЕРЕРЫВЫ")
+        logger.info("=" * 50)
+        logger.info(f"✅ Токен: {'Найден' if TOKEN else 'НЕ НАЙДЕН!'}")
+        logger.info(f"🌐 Часовой пояс: Москва (UTC+3)")
+        logger.info(f"⏰ Текущее время по Москве: {format_moscow_time()}")
+        logger.info("=" * 50)
+        logger.info("🚀 Бот запускается...")
+        
+        # Запуск бота в режиме polling
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES, 
+            drop_pending_updates=True
+        )
+        
+    except Exception as e:
+        logger.error(f"💥 Критическая ошибка: {e}")
+        raise
+
+def main():
+    """Основная функция для запуска в основном потоке"""
+    run_bot()
+
+if __name__ == '__main__':
+    main()
