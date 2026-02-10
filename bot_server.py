@@ -1,48 +1,7 @@
-import os
-import asyncio
-import logging
-from threading import Thread
-from fastapi import FastAPI
-from bot import main as bot_main  # Импортируем вашего бота
+# В файле bot_server.py
+import threading
+from bot import run_bot  # предполагая, что код выше находится в bot.py
 
-app = FastAPI()
-bot_thread = None
-
-@app.get("/health")
-def health_check():
-    """Проверка здоровья для Render"""
-    return {"status": "ok", "bot": "running"}
-
-@app.get("/")
-def root():
-    return {
-        "service": "Telegram Break Bot",
-        "status": "active",
-        "health_check": "/health"
-    }
-
-def run_bot():
-    """Запускает бота в отдельном потоке"""
-    try:
-        bot_main()
-    except Exception as e:
-        logging.error(f"Бот упал с ошибкой: {e}")
-        # Здесь можно добавить перезапуск при необходимости
-
-def start_bot():
-    """Запуск бота в фоне"""
-    global bot_thread
-    if bot_thread is None or not bot_thread.is_alive():
-        bot_thread = Thread(target=run_bot, daemon=True)
-        bot_thread.start()
-        logging.info("🤖 Telegram бот запущен в фоновом режиме")
-
-# Запускаем бота при старте сервера
-@app.on_event("startup")
-async def startup_event():
-    start_bot()
-
-if __name__ == "__main__":
-    import uvicorn
-    start_bot()
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+# Запускаем бота в отдельном потоке при старте FastAPI
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
