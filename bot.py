@@ -1,6 +1,8 @@
 import os
 import logging
 import sqlite3
+import asyncio
+import threading
 from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -642,8 +644,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
-def main():
-    """Основная функция запуска Telegram бота"""
+def run_bot():
+    """Функция для запуска бота в отдельном потоке"""
+    # Устанавливаем новый event loop для этого потока
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     # Инициализация базы данных
     init_db()
     
@@ -681,6 +687,10 @@ def main():
     except Exception as e:
         logger.error(f"💥 Критическая ошибка: {e}")
         raise
+
+def main():
+    """Основная функция для запуска в основном потоке"""
+    run_bot()
 
 if __name__ == '__main__':
     main()
