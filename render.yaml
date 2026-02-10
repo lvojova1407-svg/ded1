@@ -9,3 +9,4 @@ services:
         sync: false
     healthCheckPath: /
     autoDeploy: true
+    plan: free
