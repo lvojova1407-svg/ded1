@@ -1,14 +1,13 @@
 services:
   - type: web
-    name: telegram-break-bot
-    env: python
+    name: telegram-bot-server
+    runtime: python
+    plan: free
+    autoDeploy: true
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bot_server:app --bind 0.0.0.0:$PORT --timeout 300
+    startCommand: python bot_server.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: 8287310684:AAHSOuLxUNfg6OALTh2yk7dZzRV78kcBPYc
-      - key: PORT
-        value: "10000"
+        sync: false
     healthCheckPath: /health
-    autoDeploy: true
-    plan: free
+    env: python
