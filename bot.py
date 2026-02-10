@@ -1,18 +1,9 @@
 import os
 import logging
 import sqlite3
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-    ConversationHandler
-)
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -31,7 +22,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Таблица пользователей
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (user_id INTEGER PRIMARY KEY,
                   telegram_id INTEGER UNIQUE,
@@ -48,7 +38,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user = update.effective_user
     
-    # Простое меню
     keyboard = [
         [KeyboardButton("📅 ЗАПИСАТЬСЯ"), KeyboardButton("👤 МОИ ЗАПИСИ")],
         [KeyboardButton("🏢 ВСЕ БРОНИРОВАНИЯ"), KeyboardButton("📊 СТАТИСТИКА")]
@@ -79,7 +68,7 @@ async def handle_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-        "🕐 **Текущее время:** " + datetime.now().strftime("%H:%M") + "\n"
+        f"🕐 **Текущее время:** {datetime.now().strftime('%H:%M')}\n"
         "📅 **Показываем слоты на ближайшие 2 часа**\n\n"
         "**Легенда:**\n"
         "🟢 - свободно\n"
@@ -98,7 +87,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data.startswith("slot_"):
-        # Бронирование слота
         slot_num = data.split("_")[1]
         
         if slot_num == "4":
@@ -117,7 +105,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
     elif data == "refresh":
-        # Обновление слотов
         keyboard = [
             [
                 InlineKeyboardButton("11:00-11:15 🟢", callback_data="slot_5"),
@@ -133,7 +120,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(
             "⏰ **ВЫБОР ВРЕМЕНИ**\n\n"
-            "🕐 **Текущее время:** " + datetime.now().strftime("%H:%M") + "\n"
+            f"🕐 **Текущее время:** {datetime.now().strftime('%H:%M')}\n"
             "📅 **Обновленные слоты**\n\n"
             "👇 Нажмите на слот для записи:",
             parse_mode='Markdown',
@@ -197,10 +184,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
 def main():
     """Запуск бота"""
-    # Инициализация БД
     init_db()
     
-    # Проверка токена
     if not TOKEN:
         logger.error("❌ ОШИБКА: Токен не найден!")
         logger.error("Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
@@ -214,7 +199,6 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Логирование запуска
     logger.info("=" * 50)
     logger.info("🤖 БОТ ДЛЯ ЗАПИСИ НА ПЕРЕРЫВЫ")
     logger.info("=" * 50)
@@ -223,7 +207,7 @@ def main():
     logger.info("🚀 Бот запускается...")
     
     # Запускаем бота
-    application.run_polling()
-    
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 if __name__ == '__main__':
     main()
