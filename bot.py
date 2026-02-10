@@ -1,13 +1,16 @@
 import os
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 DB_NAME = 'breaks.db'
+PORT = int(os.environ.get('PORT', 10000))  # Render автоматически установит PORT
 
 # Московское время (UTC+3)
 MOSCOW_OFFSET = timedelta(hours=3)
@@ -28,6 +31,84 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ==================== HTTP СЕРВЕР ДЛЯ HEALTH CHECKS ====================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Обработчик HTTP запросов для health checks"""
+    
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            html = f"""
+            <html>
+            <head><title>Break Booking Bot</title></head>
+            <body style="font-family: Arial, sans-serif; padding: 20px;">
+                <h1>🤖 Office Break Booking Bot</h1>
+                <p><strong>Status:</strong> <span style="color: green;">✅ RUNNING</span></p>
+                <p><strong>Moscow Time (UTC+3):</strong> {format_moscow_time()}</p>
+                <p><strong>Telegram Bot:</strong> Active</p>
+                <p><strong>Database:</strong> Initialized</p>
+                <hr>
+                <p><a href="/health">Health Check</a> | <a href="/ping">Ping</a> | <a href="/status">Status JSON</a></p>
+            </body>
+            </html>
+            """
+            self.wfile.write(html.encode())
+        elif self.path == '/health' or self.path == '/ping':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        elif self.path == '/status':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            import json
+            status = {
+                "status": "running",
+                "bot": "active",
+                "database": "initialized",
+                "moscow_time": format_moscow_time(),
+                "port": PORT,
+                "service": "telegram-break-bot"
+            }
+            self.wfile.write(json.dumps(status).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        """Отключаем стандартное логирование HTTP запросов"""
+        pass
+
+def run_http_server():
+    """Запускает HTTP сервер для health checks"""
+    server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+    logger.info(f"🚀 HTTP сервер запущен на порту {PORT}")
+    server.serve_forever()
+
+def start_http_server():
+    """Запускает HTTP сервер в фоновом потоке"""
+    server_thread = threading.Thread(
+        target=run_http_server,
+        daemon=True,
+        name="HTTP-Server"
+    )
+    server_thread.start()
+    
+    # Даем серверу время на запуск
+    import time
+    time.sleep(2)
+    
+    if server_thread.is_alive():
+        logger.info(f"✅ HTTP сервер успешно запущен на порту {PORT}")
+        logger.info(f"✅ Health check доступен по: http://0.0.0.0:{PORT}/health")
+    else:
+        logger.error("❌ HTTP сервер не запустился")
+    
+    return server_thread
 
 # ==================== БАЗА ДАННЫХ ====================
 def init_db():
@@ -75,7 +156,7 @@ def init_db():
     
     conn.commit()
     conn.close()
-    logger.info("База данных инициализирована")
+    logger.info("✅ База данных инициализирована")
 
 def get_or_create_user(telegram_id, username, full_name):
     conn = sqlite3.connect(DB_NAME)
@@ -643,33 +724,67 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ОСНОВНАЯ ФУНКЦИЯ ====================
 def main():
+    """
+    Главная функция запускает:
+    1. Инициализацию базы данных
+    2. HTTP-сервер в фоновом потоке для health checks
+    3. Telegram бота на polling
+    """
+    
+    # 1. Инициализируем базу данных
     init_db()
     
     if not TOKEN:
-        logger.error("ОШИБКА: Токен не найден!")
-        logger.error("Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
+        logger.error("❌ ОШИБКА: Токен не найден!")
+        logger.error("ℹ️ Добавьте TELEGRAM_BOT_TOKEN в переменные окружения")
         return
     
+    # 2. Запускаем HTTP-сервер в фоновом потоке для health checks
+    logger.info(f"🔧 Запускаю HTTP сервер на порту {PORT}...")
+    http_thread = start_http_server()
+    
+    # Ждем, чтобы убедиться что HTTP сервер запустился
+    import time
+    time.sleep(3)
+    
+    if not http_thread.is_alive():
+        logger.error(f"❌ HTTP сервер не запустился на порту {PORT}. Проверьте конфигурацию.")
+    else:
+        logger.info(f"✅ HTTP сервер активен, поток: {http_thread.name}")
+    
     try:
+        # 3. Создаем и запускаем Telegram бота
         application = Application.builder().token(TOKEN).build()
         
+        # Регистрируем обработчики
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        logger.info("=" * 50)
-        logger.info("БОТ ДЛЯ ЗАПИСИ НА ПЕРЕРЫВЫ")
-        logger.info("=" * 50)
-        logger.info(f"Токен: {'Найден' if TOKEN else 'НЕ НАЙДЕН!'}")
-        logger.info(f"Часовой пояс: Москва (UTC+3)")
-        logger.info(f"Текущее время по Москве: {format_moscow_time()}")
-        logger.info("=" * 50)
-        logger.info("Бот запускается...")
+        # Информация о запуске
+        logger.info("=" * 60)
+        logger.info("🤖 БОТ ДЛЯ ЗАПИСИ НА ПЕРЕРЫВЫ")
+        logger.info("=" * 60)
+        logger.info(f"✅ Токен: {'Найден' if TOKEN else 'НЕ НАЙДЕН!'}")
+        logger.info(f"🌐 Часовой пояс: Москва (UTC+3)")
+        logger.info(f"⏰ Текущее время по Москве: {format_moscow_time()}")
+        logger.info(f"🔌 HTTP порт: {PORT}")
+        logger.info(f"📡 Health check: http://0.0.0.0:{PORT}/health")
+        logger.info(f"🧵 HTTP сервер активен: {http_thread.is_alive()}")
+        logger.info("=" * 60)
+        logger.info("🚀 Бот запускается...")
+        logger.info("=" * 60)
         
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        # Запускаем polling бота
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
         
+    except KeyboardInterrupt:
+        logger.info("👋 Бот остановлен пользователем")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"💥 Критическая ошибка: {e}")
         raise
 
 if __name__ == '__main__':
