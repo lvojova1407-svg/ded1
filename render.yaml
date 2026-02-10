@@ -6,7 +6,7 @@ services:
     startCommand: gunicorn bot_server:app --bind 0.0.0.0:$PORT --timeout 300
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false
+        sync: 8287310684:AAHSOuLxUNfg6OALTh2yk7dZzRV78kcBPYc
       - key: PORT
         value: "10000"
     healthCheckPath: /health
