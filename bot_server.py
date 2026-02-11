@@ -1,11 +1,14 @@
 """
 🤖 Telegram Bot для записи на перерывы - ИСПРАВЛЕННАЯ ВЕРСИЯ для Render
-🚀 С авто-пингом для 24/7 работы
+🚀 С авто-пингом и отладкой для 24/7 работы
 """
 import os
 import asyncio
 import logging
 import sqlite3
+import threading
+import time
+import requests
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
 
@@ -43,7 +46,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Telegram Bot для записи на перерывы",
     description="Бот для организации перерывов с авто-пингом для 24/7 работы",
-    version="2.0"
+    version="2.1"
 )
 
 # Глобальные переменные
@@ -175,11 +178,63 @@ def get_all_breaks(break_date: str) -> Dict[str, List[str]]:
     conn.close()
     return breaks
 
+# --- НОВАЯ ФУНКЦИЯ ОТЛАДКИ ---
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📡 ОТЛАДОЧНАЯ КОМАНДА /debug - проверка работы бота"""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    logger.info(f"🔍 DEBUG: Получена команда /debug от {user.id}")
+    logger.info(f"🔍 DEBUG: User: {user.username or 'нет'} ({user.first_name})")
+    logger.info(f"🔍 DEBUG: Chat ID: {chat.id}, Type: {chat.type}")
+    
+    # Проверяем подключение к базе данных
+    db_status = "✅ Работает"
+    try:
+        conn = sqlite3.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        user_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM breaks")
+        break_count = cursor.fetchone()[0]
+        conn.close()
+        db_info = f"Пользователей: {user_count}, Записей: {break_count}"
+    except Exception as e:
+        db_status = f"❌ Ошибка: {str(e)[:50]}"
+        db_info = "Не удалось подключиться"
+    
+    # Формируем ответ
+    response = (
+        f"🔧 *ОТЛАДКА СИСТЕМЫ*\n\n"
+        f"🤖 *Бот:* ✅ Работает\n"
+        f"👤 *Ваш ID:* `{user.id}`\n"
+        f"👥 *Чат ID:* `{chat.id}`\n"
+        f"🕐 *Москва:* {get_moscow_time()}\n"
+        f"📅 *Дата:* {get_current_date()}\n"
+        f"🗄️ *База данных:* {db_status}\n"
+        f"   {db_info}\n"
+        f"🌐 *Сервер:* [ded1-8.onrender.com](https://ded1-8.onrender.com)\n"
+        f"📊 *Статус:* [JSON](https://ded1-8.onrender.com/status)\n"
+        f"🏥 *Health:* [Check](https://ded1-8.onrender.com/health)\n\n"
+        f"*Доступные команды:*\n"
+        f"• /start - Главное меню\n"
+        f"• /breaks - Запись на перерыв\n"
+        f"• /my_breaks - Мои записи\n"
+        f"• /today - Расписание\n"
+        f"• /help - Помощь\n\n"
+        f"_Авто-пинг работает каждые 8 минут_"
+    )
+    
+    await update.message.reply_text(response, parse_mode='Markdown', disable_web_page_preview=True)
+    logger.info(f"🔍 DEBUG: Ответ отправлен пользователю {user.id}")
+
 # --- КОМАНДЫ TELEGRAM БОТА ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user = update.effective_user
     chat_id = update.effective_chat.id
+    
+    logger.info(f"🚀 Команда /start от {user.id} ({user.username})")
     
     # Сохраняем пользователя в БД
     save_user_to_db(
@@ -199,6 +254,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     *Доступные команды:*
     /start - Начало работы
+    /debug - Отладка системы 🆕
     /breaks - Записаться на перерыв
     /my_breaks - Мои записи
     /today - Расписание на сегодня
@@ -210,7 +266,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📅 Записаться на перерыв", callback_data="show_breaks")],
         [InlineKeyboardButton("👤 Мои записи", callback_data="my_breaks")],
-        [InlineKeyboardButton("📋 Расписание на сегодня", callback_data="today_schedule")]
+        [InlineKeyboardButton("📋 Расписание на сегодня", callback_data="today_schedule")],
+        [InlineKeyboardButton("🔧 Отладка", callback_data="debug_info")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -220,6 +277,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown',
         reply_markup=reply_markup
     )
+    
+    logger.info(f"✅ Ответ /start отправлен {user.id}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /help"""
@@ -228,6 +287,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     *Основные команды:*
     /start - Начало работы с ботом
+    /debug - Отладка системы (проверка работы)
     /breaks - Записаться на перерыв
     /my_breaks - Посмотреть свои записи
     /today - Расписание на сегодня
@@ -243,6 +303,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     *Время работы:*
     Бот работает круглосуточно!
+    
+    *Проблемы?*
+    Используйте /debug для проверки системы
     """
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -268,6 +331,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     
+    logger.info(f"🔘 Callback от {user_id}: {data}")
+    
     if data == "show_breaks":
         await show_breaks_menu(update, context)
     
@@ -276,6 +341,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "today_schedule":
         await show_today_schedule(update, context)
+    
+    elif data == "debug_info":
+        # Имитируем команду /debug через кнопку
+        await debug_command(update, context)
     
     elif data.startswith("select_"):
         # Выбор времени перерыва
@@ -314,8 +383,11 @@ async def show_breaks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     row.append(InlineKeyboardButton(f"🕐 {time}", callback_data=f"select_{time}"))
         keyboard.append(row)
     
-    # Добавляем кнопку "Назад"
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
+    # Добавляем кнопки навигации
+    keyboard.append([
+        InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu"),
+        InlineKeyboardButton("🔧 Отладка", callback_data="debug_info")
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -378,6 +450,8 @@ async def process_break_registration(update: Update, context: ContextTypes.DEFAU
     user_id = query.from_user.id
     current_date = get_current_date()
     
+    logger.info(f"📝 Запись на перерыв: user={user_id}, time={break_time}, date={current_date}")
+    
     # Сохраняем запись в БД
     success = save_break_to_db(user_id, break_time, current_date)
     
@@ -390,12 +464,14 @@ async def process_break_registration(update: Update, context: ContextTypes.DEFAU
         
         Вы успешно записаны на перерыв!
         """
+        logger.info(f"✅ Запись сохранена в БД")
     else:
         text = f"""
         ⚠️ *Запись уже существует!*
         
         Вы уже записаны на перерыв в {break_time}
         """
+        logger.info(f"⚠️ Запись уже существует")
     
     keyboard = [
         [InlineKeyboardButton("📅 Еще одна запись", callback_data="show_breaks")],
@@ -514,72 +590,108 @@ async def show_today_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=reply_markup
         )
 
-# --- ЗАПУСК ТЕЛЕГРАМ БОТА ---
+# --- ЗАПУСК ТЕЛЕГРАМ БОТА С ОТЛАДКОЙ ---
 async def start_bot():
-    """Запуск Telegram бота"""
+    """Запуск Telegram бота с подробной отладкой"""
     global bot_app
     
-    logger.info("🤖 Инициализация Telegram бота...")
+    logger.info("🤖 Инициализация Telegram бота с отладкой...")
     
     # Ждем стабилизации сети на Render
-    await asyncio.sleep(10)
+    logger.info("⏳ Ожидание стабилизации сети (5 секунд)...")
+    await asyncio.sleep(5)
     
-    # Создаем приложение
-    bot_app = Application.builder().token(TOKEN).build()
-    
-    # Добавляем обработчики команд
-    bot_app.add_handler(CommandHandler("start", start_command))
-    bot_app.add_handler(CommandHandler("help", help_command))
-    bot_app.add_handler(CommandHandler("breaks", breaks_command))
-    bot_app.add_handler(CommandHandler("my_breaks", my_breaks_command))
-    bot_app.add_handler(CommandHandler("today", today_command))
-    
-    # Добавляем обработчик inline-кнопок
-    bot_app.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Инициализируем и запускаем
-    await bot_app.initialize()
-    await bot_app.start()
-    
-    # Начинаем polling
-    await bot_app.updater.start_polling(
-        poll_interval=0.5,
-        timeout=10,
-        drop_pending_updates=True
-    )
-    
-    logger.info("✅ Telegram бот успешно запущен!")
-    return True
+    try:
+        # 1. Создаем приложение
+        logger.info("🛠️ Создание приложения...")
+        bot_app = Application.builder().token(TOKEN).build()
+        logger.info("✅ Приложение создано")
+        
+        # 2. ДОБАВЛЯЕМ ОБРАБОТЧИКИ С ЛОГИРОВАНИЕМ
+        logger.info("📋 Добавление обработчиков...")
+        
+        # ОТЛАДОЧНАЯ КОМАНДА - первая!
+        bot_app.add_handler(CommandHandler("debug", debug_command))
+        logger.info("  ✅ /debug добавлен")
+        
+        # Основные команды
+        bot_app.add_handler(CommandHandler("start", start_command))
+        logger.info("  ✅ /start добавлен")
+        
+        bot_app.add_handler(CommandHandler("help", help_command))
+        logger.info("  ✅ /help добавлен")
+        
+        bot_app.add_handler(CommandHandler("breaks", breaks_command))
+        logger.info("  ✅ /breaks добавлен")
+        
+        bot_app.add_handler(CommandHandler("my_breaks", my_breaks_command))
+        logger.info("  ✅ /my_breaks добавлен")
+        
+        bot_app.add_handler(CommandHandler("today", today_command))
+        logger.info("  ✅ /today добавлен")
+        
+        # Обработчик inline-кнопок
+        bot_app.add_handler(CallbackQueryHandler(button_callback))
+        logger.info("  ✅ CallbackQueryHandler добавлен")
+        
+        logger.info(f"✅ Всего обработчиков: {len(bot_app.handlers)}")
+        
+        # 3. Инициализируем и запускаем
+        logger.info("🚀 Инициализация бота...")
+        await bot_app.initialize()
+        logger.info("✅ Бот инициализирован")
+        
+        await bot_app.start()
+        logger.info("✅ Бот запущен")
+        
+        # 4. Начинаем polling
+        logger.info("📡 Начало polling...")
+        await bot_app.updater.start_polling(
+            poll_interval=1.0,
+            timeout=20,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+        logger.info("✅ Polling запущен")
+        
+        logger.info("🎉 Telegram бот успешно запущен и готов к работе!")
+        return True
+        
+    except Exception as e:
+        logger.error(f"💥 ОШИБКА ПРИ ЗАПУСКЕ БОТА: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 # --- ПРОСТОЙ АВТО-ПИНГ ---
-import threading
-import time
-import requests
-
 def start_auto_ping():
     """Запускает простой авто-пинг в отдельном потоке"""
     def ping_worker():
         # Ждем полного запуска сервера
+        logger.info("⏳ Авто-пинг: ожидание запуска сервера (30 секунд)...")
         time.sleep(30)
         
         url = "https://ded1-8.onrender.com"
         logger.info(f"🧵 Авто-пинг запущен для {url}")
         
+        ping_count = 0
         while True:
+            ping_count += 1
             try:
                 response = requests.get(f"{url}/health", timeout=10)
                 if response.status_code == 200:
-                    logger.info(f"✅ Авто-пинг успешен")
+                    logger.info(f"✅ Авто-пинг #{ping_count} успешен")
                 else:
-                    logger.warning(f"⚠️ Авто-пинг: код {response.status_code}")
+                    logger.warning(f"⚠️ Авто-пинг #{ping_count}: код {response.status_code}")
             except Exception as e:
-                logger.error(f"❌ Ошибка авто-пинга: {e}")
+                logger.error(f"❌ Ошибка авто-пинга #{ping_count}: {e}")
             
             # Пинг каждые 8 минут (меньше 15-минутного лимита Render)
             time.sleep(480)
     
     thread = threading.Thread(target=ping_worker, daemon=True)
     thread.start()
+    logger.info("✅ Поток авто-пинга создан")
     return thread
 
 # --- FastAPI ЭНДПОИНТЫ ---
@@ -593,10 +705,12 @@ async def root():
         "time_moscow": get_moscow_time(),
         "date": get_current_date(),
         "uptime": str(datetime.now(timezone.utc) - startup_time),
+        "version": "2.1",
         "endpoints": {
             "health": "/health",
             "status": "/status",
-            "ping": "/ping"
+            "ping": "/ping",
+            "debug": "Команда /debug в боте"
         }
     }
 
@@ -608,7 +722,8 @@ async def health_check():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "bot_running": bool(bot_app),
         "time_moscow": get_moscow_time(),
-        "version": "2.0"
+        "date": get_current_date(),
+        "version": "2.1"
     }
 
 @app.get("/status")
@@ -622,22 +737,31 @@ async def status():
         },
         "bot": {
             "initialized": bool(bot_app),
-            "database": "connected"
+            "database": "connected",
+            "handlers_count": len(bot_app.handlers) if bot_app else 0
+        },
+        "debug": {
+            "command": "Используйте /debug в боте",
+            "health_check": "https://ded1-8.onrender.com/health"
         }
     }
 
 @app.get("/ping")
 async def ping():
     """Ручной пинг"""
-    return {"ping": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "ping": "pong", 
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "bot_initialized": bool(bot_app)
+    }
 
 # --- ОБРАБОТЧИКИ СОБЫТИЙ ---
 @app.on_event("startup")
 async def startup_event():
     """Запуск при старте приложения"""
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     logger.info("🚀 ЗАПУСК БОТА ДЛЯ ЗАПИСИ НА ПЕРЕРЫВЫ")
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     
     # Инициализируем БД
     init_db()
@@ -646,16 +770,21 @@ async def startup_event():
     logger.info(f"⏰ Время по Москве: {get_moscow_time()}")
     logger.info(f"📅 Дата: {get_current_date()}")
     logger.info(f"🌐 Порт: {PORT}")
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     
     # Запускаем авто-пинг в отдельном потоке
     start_auto_ping()
     logger.info("🔧 Авто-пинг запущен (пинг каждые 8 минут)")
     
     # Запускаем бота
-    await start_bot()
+    logger.info("🤖 Запуск Telegram бота...")
+    success = await start_bot()
     
-    logger.info("🎉 Все системы запущены и готовы к работе!")
+    if success:
+        logger.info("🎉 Все системы запущены и готовы к работе!")
+        logger.info("💡 Используйте команду /debug в боте для проверки")
+    else:
+        logger.error("💥 Не удалось запустить бота!")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -663,10 +792,14 @@ async def shutdown_event():
     logger.info("🛑 Завершение работы сервера...")
     
     if bot_app:
-        await bot_app.updater.stop()
-        await bot_app.stop()
-        await bot_app.shutdown()
-        logger.info("✅ Telegram бот остановлен")
+        logger.info("🛑 Остановка Telegram бота...")
+        try:
+            await bot_app.updater.stop()
+            await bot_app.stop()
+            await bot_app.shutdown()
+            logger.info("✅ Telegram бот остановлен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при остановке бота: {e}")
     
     logger.info("👋 Сервер остановлен")
 
@@ -674,6 +807,8 @@ async def shutdown_event():
 def main():
     """Основная функция запуска"""
     logger.info(f"🌍 Запуск сервера на порту {PORT}...")
+    logger.info(f"🔧 Версия: 2.1 с отладкой")
+    logger.info(f"🚀 Start Command: python bot_server.py")
     
     uvicorn.run(
         app,
