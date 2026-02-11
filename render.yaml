@@ -1,13 +1,18 @@
 services:
   - type: web
-    name: telegram-bot-server
-    runtime: python
-    plan: free
-    autoDeploy: true
+    name: telegram-bot-24-7
+    env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: bash start.sh 
+    startCommand: python bot_server.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      - key: PORT
+        value: 10000
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          name: telegram-bot-24-7
+          type: web
+          property: url
     healthCheckPath: /health
-    env: python
+    autoDeploy: true
